@@ -1,0 +1,1 @@
+const C="sochaczew-v1",F=["./","./index.html","./styles.css","./app.js","./manifest.json","./data/schedule.json"];self.addEventListener("install",e=>e.waitUntil(caches.open(C).then(c=>c.addAll(F))));self.addEventListener("activate",e=>e.waitUntil(self.clients.claim()));self.addEventListener("fetch",e=>e.respondWith(caches.match(e.request).then(x=>x||fetch(e.request))))

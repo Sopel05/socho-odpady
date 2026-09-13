@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#39a95a">
+<title>Sochaczew Odpady</title>
+<link rel="manifest" href="manifest.json">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+<main>
+<section id="homePage" class="page active">
+<header class="top"><div><small>SOCHACZEW</small><h1>Sochaczew Odpady</h1></div><button id="homeSettings">⚙</button></header>
+<div class="hero"><img src="assets/sochaczew.jpg" alt="Sochaczew" onerror="this.style.display='none';this.parentElement.classList.add('fallback')"><b>♻️</b><span>Sochaczew</span></div>
+<div class="search card"><label>Wyszukaj adres</label><div class="searchrow"><input id="addressSearch" placeholder="np. Warszawska 12" autocomplete="off"><button id="searchButton">Szukaj</button></div><div id="suggestions"></div></div>
+<div id="selectedAddress" class="card address hidden"><div><small>Wybrany adres</small><strong id="selectedAddressText"></strong></div><button id="favoriteCurrent" class="star">☆</button></div>
+<div id="result"></div>
+<div id="emptyState" class="card empty"><b>📅</b><h2>Sprawdź najbliższy odbiór</h2><p>Wpisz nazwę ulicy lub adres.</p></div>
+<div class="notice">⚠️ Odpady należy wystawić przed posesję najpóźniej do godziny 6:30.</div>
+</section>
+
+<section id="favoritesPage" class="page">
+<header class="pagehead"><button data-home>‹</button><div><small>MOJE ADRESY</small><h1>Ulubione</h1></div></header>
+<div id="favoritesList"></div><div id="favoritesEmpty" class="card empty"><b>☆</b><h2>Brak ulubionych</h2><p>Dodaj adres gwiazdką i nadaj mu własną nazwę.</p></div>
+</section>
+
+<section id="calendarPage" class="page">
+<header class="pagehead"><button data-home>‹</button><div><small>HARMONOGRAM</small><h1>Kalendarz</h1></div></header>
+<div class="month card"><button id="prev">‹</button><strong id="monthTitle"></strong><button id="next">›</button></div>
+<div class="legend"><span>● Zmieszane</span><span>● Bio</span><span>● Segregowane</span></div>
+<div id="calendar" class="card"></div><div id="calendarDetails" class="card details"></div>
+</section>
+
+<section id="settingsPage" class="page">
+<header class="pagehead"><button data-home>‹</button><div><small>APLIKACJA</small><h1>Ustawienia</h1></div></header>
+<div class="card settings">
+<label><div><b>Powiadomienia</b><small>Przypomnienie przed odbiorem</small></div><input id="notifications" type="checkbox"></label>
+<label><div><b>Tryb ciemny</b><small>Zmienia wygląd aplikacji</small></div><input id="dark" type="checkbox"></label>
+<button id="clearFavorites">Usuń wszystkie ulubione <span>›</span></button>
+<button id="about">O aplikacji <span>›</span></button>
+</div>
+<div class="card info"><b>Sochaczew Odpady</b><small>Wersja 1.0.0</small><small>Harmonogram 2026</small></div>
+</section>
+</main>
+
+<nav>
+<button class="active" data-page="home"><b>⌂</b><small>Start</small></button>
+<button data-page="favorites"><b>☆</b><small>Ulubione</small></button>
+<button data-page="calendar"><b>▦</b><small>Kalendarz</small></button>
+<button data-page="settings"><b>⚙</b><small>Ustawienia</small></button>
+</nav>
+</div>
+
+<div id="modal" class="modal hidden"><div class="backdrop" data-close></div><div class="modalbox">
+<button class="close" data-close>×</button><h2>Dodaj do ulubionych</h2><p id="modalAddress"></p>
+<label>Własna nazwa</label><input id="favoriteName" maxlength="40" placeholder="np. Dom, Rodzice, Działka">
+<div class="actions"><button data-close>Anuluj</button><button id="saveFavorite">Zapisz</button></div>
+</div></div>
+<script src="app.js"></script>
+</body></html>
