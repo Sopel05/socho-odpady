@@ -1,77 +1,2732 @@
-let schedule=null, selectedAddress="", month=new Date(2026,8,1), selectedDay=null;
-const FAV="sochaczewFavorites", SET="sochaczewSettings";
-const $=id=>document.getElementById(id);
-const norm=s=>(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/ł/g,"l").replace(/[^a-z0-9]+/g," ").trim();
-const date=s=>{let [d,m,y]=s.split(".").map(Number);return new Date(y,m-1,d)};
-const long=d=>new Intl.DateTimeFormat("pl-PL",{day:"numeric",month:"long",year:"numeric"}).format(d);
-const short=d=>new Intl.DateTimeFormat("pl-PL",{day:"numeric",month:"long"}).format(d);
+/* =========================================================
+   SOCHACZEW ODPADY
+   Pełny plik app.js
+   ========================================================= */
 
-function streets(){return [...new Set(Object.values(schedule.streetGroups.mixed).flat().concat(Object.values(schedule.streetGroups.segregated).flat()))].sort((a,b)=>a.localeCompare(b,"pl"))}
-function streetOf(a){return (a||"").trim().replace(/\s+\d+[A-Za-z]?(?:[/-]\d+)?$/,"").trim()}
-function findStreet(a){let n=norm(streetOf(a));return streets().find(s=>norm(s)===n)}
-function region(s){let n=norm(s);for(let [r,arr] of Object.entries(schedule.streetGroups.mixed))if(arr.some(x=>norm(x)===n))return r}
-function zone(s){let n=norm(s);for(let [z,arr] of Object.entries(schedule.streetGroups.segregated))if(arr.some(x=>norm(x)===n))return z}
-function pickups(a){
- let s=findStreet(a), out=[]; if(!s)return out;
- let r=region(s),z=zone(s);
- if(r){let x=schedule.mixed.find(q=>q.region===r);(x?.dates||[]).forEach(d=>out.push({date:d,type:"Odpady zmieszane",icon:"🗑️",cls:""}))}
- if(z){let x=schedule.segregated.find(q=>q.zone===z);(x?.pickups||[]).forEach(p=>{let cls=p.type.includes("bio")?"bio":"seg";out.push({...p,icon:p.type.includes("Gabaryty")?"📦":"♻️",cls})})}
- return out.sort((a,b)=>date(a.date)-date(b.date))
+/* ===== KOLORY I NAZWY ODPADÓW =====
+   Jeśli kiedyś będziesz chciał zmienić kolor,
+   zmieniasz go tylko tutaj.
+*/
+const WASTE_TYPES = {
+    yellow: {
+        name: "Tworzywa sztuczne i metale",
+        bag: "worek żółty",
+        color: "#F4C542"
+    },
+
+    blue: {
+        name: "Papier",
+        bag: "worek niebieski",
+        color: "#3B82F6"
+    },
+
+    brown: {
+        name: "Bioodpady",
+        bag: "worek brązowy",
+        color: "#9A6B3F"
+    },
+
+    green: {
+        name: "Szkło",
+        bag: "worek zielony",
+        color: "#22A447"
+    },
+
+    gray: {
+        name: "Popiół",
+        bag: "worek szary",
+        color: "#9CA3AF"
+    },
+
+    mixed: {
+        name: "Odpady zmieszane",
+        bag: "worek czarny",
+        color: "#222222"
+    },
+
+    white: {
+        name: "Tekstylia",
+        bag: "worek biały",
+        color: "#FFFFFF"
+    },
+
+    purple: {
+        name: "Gabaryty",
+        bag: null,
+        color: "#8B5CF6"
+    }
+};
+
+
+/* =========================================================
+   ZMIENNE APLIKACJI
+   ========================================================= */
+
+let schedule = null;
+
+let selectedStreet =
+    localStorage.getItem("selectedStreet") || "";
+
+let currentMonth = new Date().getMonth();
+
+let currentYear = new Date().getFullYear();
+
+let pendingFavoriteStreet = "";
+
+
+/* =========================================================
+   ALIASY ULIC
+   Dane mieszane i segregowane mają czasami różne nazwy
+   tej samej ulicy.
+   ========================================================= */
+
+const STREET_ALIASES = {
+
+    "korczaka": [
+        "korczak"
+    ],
+
+    "korczak": [
+        "korczaka"
+    ],
+
+    "krzywoustego": [
+        "bolesława krzywoustego"
+    ],
+
+    "11 listopada": [
+        "11-go listopada"
+    ],
+
+    "brzechwy": [
+        "jana brzechwy"
+    ],
+
+    "chrobrego": [
+        "bolesława chrobrego"
+    ],
+
+    "popiełuszki": [
+        "księdza j. popiełuszki"
+    ],
+
+    "stwosza": [
+        "wita stwosza"
+    ],
+
+    "tuwima": [
+        "juliana tuwima"
+    ],
+
+    "twardowskiego": [
+        "księdza jana twardowskiego"
+    ],
+
+    "śmiałego": [
+        "bolesława śmiałego"
+    ],
+
+    "ks. ziemowita": [
+        "ziemowita"
+    ],
+
+    "skłodowskiej-curie": [
+        "skłodowskiej"
+    ],
+
+    "jana iii sobieskiego": [
+        "sobieskiego"
+    ]
+};
+
+
+/* =========================================================
+   NORMALIZACJA NAZW ULIC
+   ========================================================= */
+
+function normalizeStreet(value) {
+
+    return String(value || "")
+        .toLocaleLowerCase("pl-PL")
+
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+
+        .replace(/ł/g, "l")
+
+        .replace(/\([^)]*\)/g, "")
+
+        .replace(/\bul\.?\s*/g, "")
+
+        .replace(/\bulica\s*/g, "")
+
+        .replace(/\s+/g, " ")
+
+        .replace(/[.,]/g, "")
+
+        .trim();
 }
-function future(a){let t=new Date();t.setHours(0,0,0,0);return pickups(a).filter(p=>date(p.date)>=t)}
-function search(){
- let raw=$("addressSearch").value.trim(), s=findStreet(raw);
- if(!s){$("result").innerHTML=`<div class="card empty"><b>🔎</b><h2>Nie znaleziono ulicy</h2><p>Spróbuj wpisać nazwę ulicy, np. Warszawska.</p></div>`;return}
- let n=raw.slice(s.length).trim(); if(n&&!/^\d/.test(n))n="";
- selectedAddress=s+(n?" "+n:""); $("addressSearch").value=selectedAddress;
- $("selectedAddressText").textContent=selectedAddress;$("selectedAddress").classList.remove("hidden");$("emptyState").classList.add("hidden");$("suggestions").innerHTML="";
- renderHome(); updateStar();
+
+
+/* =========================================================
+   USUWANIE NUMERU DOMU
+   ========================================================= */
+
+function removeHouseNumber(value) {
+
+    return String(value || "")
+        .replace(
+            /\s+(?:m\.?\s*)?\d+[a-zA-Z]?\s*$/u,
+            ""
+        )
+        .trim();
 }
-function renderSuggest(){
- let q=norm($("addressSearch").value), box=$("suggestions");box.innerHTML="";if(!q)return;
- streets().filter(s=>norm(s).includes(q)).slice(0,8).forEach(s=>{let b=document.createElement("button");b.className="suggestion";b.innerHTML=`<span><b>${s}</b><small>Sochaczew</small></span><span>›</span>`;b.onclick=()=>{$("addressSearch").value=s;search()};box.appendChild(b)})
+
+
+/* =========================================================
+   ALIASY
+   ========================================================= */
+
+function aliasKeys(value) {
+
+    const base =
+        normalizeStreet(
+            removeHouseNumber(value)
+        );
+
+    const result = new Set();
+
+    if (base) {
+        result.add(base);
+    }
+
+    const aliases =
+        STREET_ALIASES[base] || [];
+
+    aliases.forEach(alias => {
+        result.add(
+            normalizeStreet(alias)
+        );
+    });
+
+    Object.entries(STREET_ALIASES)
+        .forEach(([key, values]) => {
+
+            const normalizedKey =
+                normalizeStreet(key);
+
+            const found =
+                values.some(
+                    value =>
+                        normalizeStreet(value) === base
+                );
+
+            if (found) {
+                result.add(normalizedKey);
+            }
+        });
+
+    return [...result].filter(Boolean);
 }
-function renderHome(){
- let arr=future(selectedAddress), box=$("result");box.innerHTML="";
- if(!arr.length){box.innerHTML=`<div class="card empty"><b>📭</b><h2>Brak przyszłych terminów</h2><p>Brak terminu w zapisanym harmonogramie.</p></div>`;return}
- let n=arr[0];box.innerHTML=`<div class="card next"><small>NAJBLIŻSZY ODBIÓR</small><h2>${short(date(n.date))}</h2><p>${n.icon} ${n.type}</p></div><h3 style="margin:16px 2px 9px">Następne terminy</h3>`;
- arr.slice(1).forEach(p=>box.insertAdjacentHTML("beforeend",`<div class="card pickup"><span class="ico">${p.icon}</span><div><b>${p.type}</b><small>${long(date(p.date))}</small></div><span class="date">${p.date.slice(0,5)}</span></div>`))
+
+
+/* =========================================================
+   PORÓWNYWANIE ULIC
+   ========================================================= */
+
+function sameStreet(a, b) {
+
+    const aa = aliasKeys(a);
+
+    const bb = aliasKeys(b);
+
+    if (
+        aa.some(
+            value =>
+                bb.includes(value)
+        )
+    ) {
+        return true;
+    }
+
+    /*
+      Obsługa np.
+      "Bolesława Chrobrego"
+      oraz
+      "Chrobrego"
+    */
+
+    return aa.some(x =>
+        bb.some(y => {
+
+            if (
+                x.length < 6 ||
+                y.length < 6
+            ) {
+                return false;
+            }
+
+            return (
+                x.endsWith(" " + y) ||
+                y.endsWith(" " + x)
+            );
+        })
+    );
 }
-function favs(){try{return JSON.parse(localStorage.getItem(FAV)||"[]")}catch{return[]}}
-function saveFavs(x){localStorage.setItem(FAV,JSON.stringify(x))}
-function favorite(a){return favs().some(x=>norm(x.address)===norm(a))}
-function updateStar(){$("favoriteCurrent").textContent=favorite(selectedAddress)?"★":"☆"}
-function openModal(){if(!selectedAddress)return;$("modalAddress").textContent=selectedAddress;$("favoriteName").value="";$("modal").classList.remove("hidden");$("favoriteName").focus()}
-function closeModal(){$("modal").classList.add("hidden")}
-function addFav(){let a=$("modalAddress").textContent.trim(),n=$("favoriteName").value.trim()||a,l=favs(),e=l.find(x=>norm(x.address)===norm(a));if(e)e.name=n;else l.push({id:Date.now().toString(),name:n,address:a});saveFavs(l);closeModal();updateStar();renderFavs()}
-function removeFav(id){saveFavs(favs().filter(x=>x.id!==id));renderFavs();updateStar()}
-function renameFav(id){let l=favs(),x=l.find(q=>q.id===id),n=prompt("Nowa nazwa:",x?.name||"");if(n?.trim()){x.name=n.trim();saveFavs(l);renderFavs()}}
-function openFav(x){$("addressSearch").value=x.address;search();show("home")}
-function renderFavs(){
- let l=favs(),box=$("favoritesList");box.innerHTML="";$("favoritesEmpty").classList.toggle("hidden",l.length>0);
- l.forEach(x=>{let d=document.createElement("div");d.className="card favorite";d.innerHTML=`<span class="star2">★</span><div class="fi"><b></b><small></small></div><button class="edit">✎</button><button class="del">×</button>`;d.querySelector("b").textContent=x.name;d.querySelector("small").textContent=x.address;d.querySelector(".edit").onclick=e=>{e.stopPropagation();renameFav(x.id)};d.querySelector(".del").onclick=e=>{e.stopPropagation();removeFav(x.id)};d.querySelector(".fi").onclick=()=>openFav(x);box.appendChild(d)})
+
+
+/* =========================================================
+   WSZYSTKIE ULICE
+   ========================================================= */
+
+function allStreets() {
+
+    const result = new Set();
+
+    const groups =
+        schedule?.streetGroups || {};
+
+    Object.values(groups)
+        .forEach(zoneMap => {
+
+            Object.values(zoneMap || {})
+                .forEach(list => {
+
+                    (list || [])
+                        .forEach(street => {
+
+                            result.add(street);
+
+                        });
+
+                });
+
+        });
+
+    return [...result]
+        .sort(
+            (a, b) =>
+                a.localeCompare(
+                    b,
+                    "pl-PL"
+                )
+        );
 }
-function show(p){document.querySelectorAll(".page").forEach(x=>x.classList.remove("active"));$(p+"Page").classList.add("active");document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("active",x.dataset.page===p));if(p==="favorites")renderFavs();if(p==="calendar")renderCalendar();if(p==="settings")applySettings();scrollTo(0,0)}
-function renderCalendar(){
- let y=month.getFullYear(),m=month.getMonth(),cal=$("calendar");$("monthTitle").textContent=new Intl.DateTimeFormat("pl-PL",{month:"long",year:"numeric"}).format(month);
- cal.innerHTML=`<div class="week"><div>Pn</div><div>Wt</div><div>Śr</div><div>Cz</div><div>Pt</div><div>Sb</div><div>Nd</div></div><div class="days"></div>`;
- let days=cal.querySelector(".days"),start=(new Date(y,m,1).getDay()+6)%7,count=new Date(y,m+1,0).getDate(),arr=pickups(selectedAddress);
- for(let i=0;i<start;i++)days.insertAdjacentHTML("beforeend","<div></div>");
- for(let d=1;d<=count;d++){let ds=`${String(d).padStart(2,"0")}.${String(m+1).padStart(2,"0")}.${y}`,ps=arr.filter(p=>p.date===ds),b=document.createElement("button"),now=new Date();b.className="day"+(d===now.getDate()&&m===now.getMonth()&&y===now.getFullYear()?" today":"")+(selectedDay===ds?" selected":"");b.innerHTML=`<span>${d}</span><span class="dots">${ps.slice(0,4).map(p=>`<i class="dot ${p.cls}"></i>`).join("")}</span>`;b.onclick=()=>{selectedDay=ds;renderCalendar()};days.appendChild(b)}
- let ps=arr.filter(p=>p.date===selectedDay);$("calendarDetails").innerHTML=selectedDay?`<h3>${selectedDay}</h3>${ps.length?ps.map(p=>`<div class="line">${p.icon} <b>${p.type}</b></div>`).join(""):"<p>Brak odbioru tego dnia.</p>"}`:`<h3>${selectedAddress||"Wybierz adres"}</h3><p>Wybierz dzień z kropką.</p>`
+
+
+/* =========================================================
+   SZUKANIE ULICY
+   ========================================================= */
+
+function findStreet(query) {
+
+    const withoutNumber =
+        removeHouseNumber(query);
+
+    if (!withoutNumber) {
+        return null;
+    }
+
+    const streets =
+        allStreets();
+
+    /* Najpierw dokładne dopasowanie */
+
+    const exact =
+        streets.find(
+            street =>
+                sameStreet(
+                    withoutNumber,
+                    street
+                )
+        );
+
+    if (exact) {
+        return exact;
+    }
+
+    /* Potem częściowe */
+
+    const normalizedQuery =
+        normalizeStreet(
+            withoutNumber
+        );
+
+    return streets.find(street => {
+
+        const normalizedStreet =
+            normalizeStreet(street);
+
+        return (
+            normalizedStreet.includes(
+                normalizedQuery
+            ) ||
+            normalizedQuery.includes(
+                normalizedStreet
+            )
+        );
+
+    }) || null;
 }
-function applySettings(){let s=JSON.parse(localStorage.getItem(SET)||"{}");document.body.classList.toggle("dark",!!s.dark);$("dark").checked=!!s.dark;$("notifications").checked=!!s.notifications}
-function setting(k,v){let s=JSON.parse(localStorage.getItem(SET)||"{}");s[k]=v;localStorage.setItem(SET,JSON.stringify(s));applySettings()}
-async function init(){
- try{let r=await fetch("data/schedule.json");schedule=await r.json()}catch(e){$("result").innerHTML='<div class="card empty"><h2>Błąd danych</h2><p>Uruchom projekt przez Live Server.</p></div>';return}
- $("addressSearch").oninput=renderSuggest;$("addressSearch").onkeydown=e=>{if(e.key==="Enter")search()};$("searchButton").onclick=search;
- $("favoriteCurrent").onclick=()=>favorite(selectedAddress)?(saveFavs(favs().filter(x=>norm(x.address)!==norm(selectedAddress))),updateStar(),renderFavs()):openModal();
- document.querySelectorAll("[data-close]").forEach(x=>x.onclick=closeModal);$("saveFavorite").onclick=addFav;$("favoriteName").onkeydown=e=>{if(e.key==="Enter")addFav()};
- document.querySelectorAll("nav button").forEach(x=>x.onclick=()=>show(x.dataset.page));document.querySelectorAll("[data-home]").forEach(x=>x.onclick=()=>show("home"));$("homeSettings").onclick=()=>show("settings");
- $("prev").onclick=()=>{month=new Date(month.getFullYear(),month.getMonth()-1,1);selectedDay=null;renderCalendar()};$("next").onclick=()=>{month=new Date(month.getFullYear(),month.getMonth()+1,1);selectedDay=null;renderCalendar()};
- $("dark").onchange=e=>setting("dark",e.target.checked);$("notifications").onchange=e=>setting("notifications",e.target.checked);
- $("clearFavorites").onclick=()=>{if(confirm("Usunąć wszystkie ulubione?")){saveFavs([]);renderFavs();updateStar()}};$("about").onclick=()=>alert("Sochaczew Odpady\nWersja 1.0.0\nHarmonogram 2026");
- applySettings()
+
+
+/* =========================================================
+   ZNAJDOWANIE REGIONU ZMIESZANYCH
+   ========================================================= */
+
+function findMixedRegion(street) {
+
+    const groups =
+        schedule?.streetGroups?.mixed || {};
+
+    for (
+        const [region, streets]
+        of Object.entries(groups)
+    ) {
+
+        if (
+            (streets || []).some(
+                item =>
+                    sameStreet(
+                        street,
+                        item
+                    )
+            )
+        ) {
+
+            return region;
+
+        }
+
+    }
+
+    return null;
 }
-document.addEventListener("DOMContentLoaded",init);
-if("serviceWorker" in navigator)window.addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));
+
+
+/* =========================================================
+   ZNAJDOWANIE STREFY SEGREGOWANYCH
+   ========================================================= */
+
+function findSegregatedZone(street) {
+
+    const groups =
+        schedule?.streetGroups?.segregated || {};
+
+    for (
+        const [zone, streets]
+        of Object.entries(groups)
+    ) {
+
+        if (
+            (streets || []).some(
+                item =>
+                    sameStreet(
+                        street,
+                        item
+                    )
+            )
+        ) {
+
+            return zone;
+
+        }
+
+    }
+
+    return null;
+}
+
+
+/* =========================================================
+   STREFY DLA KONKRETNEJ ULICY
+   ========================================================= */
+
+function getStreetZones(street) {
+
+    return {
+
+        mixed:
+            findMixedRegion(street),
+
+        segregated:
+            findSegregatedZone(street)
+
+    };
+}
+
+
+/* =========================================================
+   KONWERSJA RODZAJU ODPADU
+   ========================================================= */
+
+function convertPickupType(type) {
+
+    const value =
+        normalizeStreet(type);
+
+    /*
+      Żółty + niebieski
+      MUSZĄ zostać dwoma osobnymi rodzajami.
+    */
+
+    if (
+        value.includes("zolty") &&
+        value.includes("niebieski")
+    ) {
+
+        return [
+            "yellow",
+            "blue"
+        ];
+
+    }
+
+    if (
+        value.includes("brazowy") ||
+        value.includes("bio")
+    ) {
+
+        return [
+            "brown"
+        ];
+
+    }
+
+    if (
+        value.includes("gabaryt")
+    ) {
+
+        return [
+            "purple"
+        ];
+
+    }
+
+    if (
+        value.includes("tekstyl")
+    ) {
+
+        return [
+            "white"
+        ];
+
+    }
+
+    if (
+        value.includes("szary")
+    ) {
+
+        return [
+            "gray"
+        ];
+
+    }
+
+    if (
+        value.includes("zielony")
+    ) {
+
+        return [
+            "green"
+        ];
+
+    }
+
+    return [];
+}
+
+
+/* =========================================================
+   TERMINY DLA KONKRETNEJ ULICY
+   ========================================================= */
+
+function getPickupsForStreet(street) {
+
+    if (!street) {
+        return [];
+    }
+
+    const zones =
+        getStreetZones(street);
+
+    const result = [];
+
+
+    /* -----------------------------------------
+       ODPADY ZMIESZANE
+       ----------------------------------------- */
+
+    if (zones.mixed) {
+
+        const region =
+            (schedule.mixed || [])
+                .find(
+                    item =>
+                        item.region ===
+                        zones.mixed
+                );
+
+        if (region) {
+
+            (region.dates || [])
+                .forEach(date => {
+
+                    result.push({
+
+                        date: date,
+
+                        type: "mixed"
+
+                    });
+
+                });
+
+        }
+
+    }
+
+
+    /* -----------------------------------------
+       ODPADY SEGREGOWANE
+       ----------------------------------------- */
+
+    if (zones.segregated) {
+
+        const zone =
+            (schedule.segregated || [])
+                .find(
+                    item =>
+                        item.zone ===
+                        zones.segregated
+                );
+
+        if (zone) {
+
+            (zone.pickups || [])
+                .forEach(pickup => {
+
+                    const types =
+                        convertPickupType(
+                            pickup.type
+                        );
+
+                    types.forEach(type => {
+
+                        result.push({
+
+                            date:
+                                pickup.date,
+
+                            type:
+                                type
+
+                        });
+
+                    });
+
+                });
+
+        }
+
+    }
+
+
+    return result.sort(
+        (a, b) =>
+            parseDate(a.date) -
+            parseDate(b.date)
+    );
+}
+
+
+/* =========================================================
+   ODPADY W KONKRETNYM DNIU
+   ========================================================= */
+
+function getWasteForDate(
+    date,
+    street = selectedStreet
+) {
+
+    if (!street) {
+        return [];
+    }
+
+    const wantedDate =
+        toPolishDate(date);
+
+    const pickups =
+        getPickupsForStreet(
+            street
+        );
+
+    return [
+        ...new Set(
+
+            pickups
+                .filter(
+                    item =>
+                        item.date ===
+                        wantedDate
+                )
+                .map(
+                    item =>
+                        item.type
+                )
+
+        )
+    ];
+}
+
+
+/* =========================================================
+   GRUPOWANIE TERMINÓW PO DACIE
+   ========================================================= */
+
+function groupByDate(pickups) {
+
+    const map = new Map();
+
+    pickups.forEach(item => {
+
+        if (
+            !map.has(item.date)
+        ) {
+
+            map.set(
+                item.date,
+                []
+            );
+
+        }
+
+        const list =
+            map.get(item.date);
+
+        if (
+            !list.includes(
+                item.type
+            )
+        ) {
+
+            list.push(
+                item.type
+            );
+
+        }
+
+    });
+
+
+    return [
+        ...map.entries()
+    ]
+
+        .map(
+            ([date, types]) => ({
+                date,
+                types
+            })
+        )
+
+        .sort(
+            (a, b) =>
+                parseDate(a.date) -
+                parseDate(b.date)
+        );
+}
+
+
+/* =========================================================
+   NAJBLIŻSZY ODBIÓR
+   ========================================================= */
+
+function nextPickup(street) {
+
+    const today =
+        new Date();
+
+    today.setHours(
+        0,
+        0,
+        0,
+        0
+    );
+
+    return groupByDate(
+        getPickupsForStreet(
+            street
+        )
+    ).find(
+        item =>
+            parseDate(
+                item.date
+            ) >= today
+    ) || null;
+}
+
+
+/* =========================================================
+   WYŚWIETLENIE TERMINU
+   ========================================================= */
+
+function renderPickup(item) {
+
+    const names =
+        item.types
+            .map(
+                type =>
+                    WASTE_TYPES[type]
+                        .name
+            )
+            .join(" + ");
+
+
+    const bags =
+        item.types
+
+            .map(type => {
+
+                const bag =
+                    WASTE_TYPES[type]
+                        .bag;
+
+                return bag
+                    ? `(${bag})`
+                    : "";
+
+            })
+
+            .filter(Boolean)
+
+            .join(" + ");
+
+
+    return `
+        <div class="pickup">
+
+            <div class="ico">
+                ♻️
+            </div>
+
+            <div>
+                <b>
+                    ${escapeHtml(names)}
+                </b>
+
+                <small>
+                    ${escapeHtml(bags)}
+                </small>
+            </div>
+
+            <div class="date">
+                ${escapeHtml(
+                    formatDate(
+                        item.date
+                    )
+                )}
+            </div>
+
+        </div>
+    `;
+}
+
+
+/* =========================================================
+   POKAZANIE HARMONOGRAMU ULICY
+   ========================================================= */
+
+function showStreetSchedule(street) {
+
+    selectedStreet = street;
+
+    localStorage.setItem(
+        "selectedStreet",
+        street
+    );
+
+    const emptyState =
+        document.getElementById(
+            "emptyState"
+        );
+
+    if (emptyState) {
+        emptyState.classList.add("hidden");
+    }
+
+    const addressCard =
+        document.getElementById(
+            "selectedAddress"
+        );
+
+    const addressText =
+        document.getElementById(
+            "selectedAddressText"
+        );
+
+    if (
+        addressCard &&
+        addressText
+    ) {
+        addressCard.classList.remove("hidden");
+        addressText.textContent = street;
+    }
+
+    updateFavoriteStar();
+
+    /*
+     * POBIERAMY TERMINY DLA WYBRANEJ ULICY
+     */
+    const allPickups =
+        getPickupsForStreet(street);
+
+    /*
+     * DZISIAJ - godzina 00:00
+     *
+     * Dzięki temu termin dzisiejszy
+     * nadal jest traktowany jako najbliższy.
+     */
+    const today =
+        new Date();
+
+    today.setHours(
+        0,
+        0,
+        0,
+        0
+    );
+
+    /*
+     * USUWAMY WSZYSTKIE TERMINY,
+     * KTÓRE JUŻ MINĘŁY.
+     */
+    const upcomingPickups =
+        allPickups.filter(
+            item =>
+                parseDate(item.date) >= today
+        );
+
+    /*
+     * Grupujemy pozostałe terminy
+     * według daty.
+     */
+    const pickups =
+        groupByDate(
+            upcomingPickups
+        );
+
+    /*
+     * Najbliższy termin.
+     */
+    const next =
+        pickups.length
+            ? pickups[0]
+            : null;
+
+    const result =
+        document.getElementById(
+            "result"
+        );
+
+    if (!result) {
+        return;
+    }
+
+    /*
+     * Jeżeli nie ma już żadnego
+     * przyszłego terminu.
+     */
+    if (!pickups.length) {
+
+        result.innerHTML = `
+
+            <div class="card empty">
+
+                <h2>
+                    Brak kolejnych odbiorów
+                </h2>
+
+                <p>
+                    Wszystkie dostępne terminy
+                    dla tej ulicy już minęły.
+                </p>
+
+            </div>
+
+        `;
+
+        renderCalendarDetails();
+
+        return;
+    }
+
+    /*
+     * WYŚWIETLAMY TYLKO PRZYSZŁE TERMINY.
+     */
+    result.innerHTML = `
+
+        <div class="next card">
+
+            <small>
+                NAJBLIŻSZY ODBIÓR
+            </small>
+
+            <h2>
+                ${escapeHtml(
+                    formatDate(
+                        next.date
+                    )
+                )}
+            </h2>
+
+            <p>
+                ${escapeHtml(
+                    next.types
+                        .map(
+                            type =>
+                                WASTE_TYPES[
+                                    type
+                                ].name
+                        )
+                        .join(" + ")
+                )}
+            </p>
+
+        </div>
+
+
+        <div class="card schedule-list">
+
+            <h2>
+                Najbliższe odbiory
+            </h2>
+
+            ${
+                pickups
+                    .slice(0, 10)
+                    .map(renderPickup)
+                    .join("")
+            }
+
+        </div>
+
+    `;
+
+    renderCalendarDetails();
+}
+
+
+/* =========================================================
+   WYSZUKIWANIE
+   ========================================================= */
+
+function setupSearch() {
+
+    const input =
+        document.getElementById(
+            "addressSearch"
+        );
+
+    const button =
+        document.getElementById(
+            "searchButton"
+        );
+
+    const suggestions =
+        document.getElementById(
+            "suggestions"
+        );
+
+
+    if (
+        !input ||
+        !button ||
+        !suggestions
+    ) {
+        return;
+    }
+
+
+    function drawSuggestions() {
+
+        const query =
+            input.value.trim();
+
+
+        if (!query) {
+
+            suggestions.innerHTML =
+                "";
+
+            return;
+        }
+
+
+        const normalized =
+            normalizeStreet(
+                removeHouseNumber(
+                    query
+                )
+            );
+
+
+        const matches =
+            allStreets()
+
+                .filter(
+                    street =>
+                        normalizeStreet(
+                            street
+                        ).includes(
+                            normalized
+                        )
+                )
+
+                .slice(0, 8);
+
+
+        suggestions.innerHTML =
+            matches
+
+                .map(
+                    street => `
+
+                        <button
+                            class="suggestion"
+                            data-street="${escapeAttribute(street)}"
+                            type="button"
+                        >
+
+                            <span>
+                                ${escapeHtml(street)}
+                            </span>
+
+                            <small>
+                                Wybierz
+                            </small>
+
+                        </button>
+
+                    `
+                )
+
+                .join("");
+
+
+        suggestions
+            .querySelectorAll(
+                "[data-street]"
+            )
+
+            .forEach(button => {
+
+                button.addEventListener(
+                    "click",
+                    () => {
+
+                        const street =
+                            button.dataset.street;
+
+                        input.value =
+                            street;
+
+                        suggestions.innerHTML =
+                            "";
+
+                        selectStreet(
+                            street
+                        );
+
+                    }
+                );
+
+            });
+    }
+
+
+    input.addEventListener(
+        "input",
+        drawSuggestions
+    );
+
+
+    input.addEventListener(
+        "keydown",
+        event => {
+
+            if (
+                event.key ===
+                "Enter"
+            ) {
+
+                event.preventDefault();
+
+                doSearch();
+
+            }
+
+        }
+    );
+
+
+    button.addEventListener(
+        "click",
+        doSearch
+    );
+
+
+    function doSearch() {
+
+        const found =
+            findStreet(
+                input.value
+            );
+
+
+        suggestions.innerHTML =
+            "";
+
+
+        if (!found) {
+
+            document
+                .getElementById(
+                    "emptyState"
+                )
+                ?.classList
+                .add("hidden");
+
+
+            const result =
+                document.getElementById(
+                    "result"
+                );
+
+
+            if (result) {
+
+                result.innerHTML = `
+
+                    <div class="error-box">
+
+                        <strong>
+                            Nie znaleziono ulicy
+                        </strong>
+
+                        <p>
+                            Sprawdź pisownię
+                            lub wybierz ulicę
+                            z podpowiedzi.
+                        </p>
+
+                    </div>
+
+                `;
+
+            }
+
+            return;
+        }
+
+
+        input.value =
+            found;
+
+
+        selectStreet(
+            found
+        );
+    }
+}
+
+
+/* =========================================================
+   WYBÓR ULICY
+   ========================================================= */
+
+function selectStreet(street) {
+
+    showStreetSchedule(
+        street
+    );
+
+    switchPage(
+        "home"
+    );
+}
+
+
+/* =========================================================
+   NAWIGACJA
+   ========================================================= */
+
+function setupNavigation() {
+
+    document
+        .querySelectorAll(
+            "[data-page]"
+        )
+
+        .forEach(button => {
+
+            button.addEventListener(
+                "click",
+                () => {
+
+                    switchPage(
+                        button.dataset.page
+                    );
+
+                }
+            );
+
+        });
+}
+
+
+/* =========================================================
+   ZMIANA STRONY
+   ========================================================= */
+
+function switchPage(page) {
+
+    document
+        .querySelectorAll(
+            ".page"
+        )
+
+        .forEach(element => {
+
+            element.classList.remove(
+                "active"
+            );
+
+        });
+
+
+    const target =
+        document.getElementById(
+            `${page}Page`
+        );
+
+
+    if (target) {
+
+        target.classList.add(
+            "active"
+        );
+
+    }
+
+
+    document
+        .querySelectorAll(
+            "nav [data-page]"
+        )
+
+        .forEach(button => {
+
+            button.classList.toggle(
+                "active",
+                button.dataset.page === page
+            );
+
+        });
+
+
+    if (
+        page ===
+        "favorites"
+    ) {
+
+        renderFavorites();
+
+    }
+
+
+    if (
+        page ===
+        "calendar"
+    ) {
+
+        renderCalendar();
+
+        renderCalendarDetails();
+
+    }
+}
+
+
+/* =========================================================
+   KALENDARZ
+   ========================================================= */
+
+function renderCalendar() {
+
+    const calendar =
+        document.getElementById(
+            "calendar"
+        );
+
+    const title =
+        document.getElementById(
+            "monthTitle"
+        );
+
+
+    if (!calendar) {
+        return;
+    }
+
+
+    const first =
+        new Date(
+            currentYear,
+            currentMonth,
+            1
+        );
+
+
+    const days =
+        new Date(
+            currentYear,
+            currentMonth + 1,
+            0
+        ).getDate();
+
+
+    const offset =
+        (
+            first.getDay() + 6
+        ) % 7;
+
+
+    if (title) {
+
+        title.textContent =
+            first.toLocaleDateString(
+                "pl-PL",
+                {
+                    month: "long",
+                    year: "numeric"
+                }
+            );
+
+    }
+
+
+    let html = `
+
+        <div class="calendar-weekdays">
+
+            <span>Pn</span>
+            <span>Wt</span>
+            <span>Śr</span>
+            <span>Cz</span>
+            <span>Pt</span>
+            <span>So</span>
+            <span>Nd</span>
+
+        </div>
+
+        <div class="calendar-grid">
+
+    `;
+
+
+    for (
+        let i = 0;
+        i < offset;
+        i++
+    ) {
+
+        html += `
+            <div
+                class="calendar-day empty"
+            ></div>
+        `;
+
+    }
+
+
+    for (
+        let day = 1;
+        day <= days;
+        day++
+    ) {
+
+        const iso =
+            `${currentYear}-${String(
+                currentMonth + 1
+            ).padStart(2, "0")}-${String(
+                day
+            ).padStart(2, "0")}`;
+
+
+        const types =
+            getWasteForDate(
+                iso
+            );
+
+
+        const today =
+            new Date();
+
+
+        const isToday =
+            today.getFullYear() ===
+                currentYear &&
+
+            today.getMonth() ===
+                currentMonth &&
+
+            today.getDate() ===
+                day;
+
+
+        html += `
+
+            <button
+                type="button"
+                class="calendar-day
+                    ${types.length
+                        ? "has-pickup"
+                        : ""}
+                    ${isToday
+                        ? "today"
+                        : ""}"
+                data-date="${iso}"
+            >
+
+                <span class="day-number">
+                    ${day}
+                </span>
+
+                <div class="day-dots">
+
+                    ${
+                        types
+                            .map(
+                                type => `
+
+                                    <span
+                                        class="calendar-dot"
+                                        style="background:${WASTE_TYPES[type].color}"
+                                        title="${escapeAttribute(
+                                            WASTE_TYPES[type].name
+                                        )}"
+                                    ></span>
+
+                                `
+                            )
+                            .join("")
+                    }
+
+                </div>
+
+            </button>
+
+        `;
+    }
+
+
+    html += `
+
+        </div>
+
+        <div class="calendar-legend">
+
+            <h3>
+                Legenda kolorów
+            </h3>
+
+            <div class="legend-grid">
+
+                ${
+                    Object.entries(
+                        WASTE_TYPES
+                    )
+
+                    .map(
+                        ([key, value]) => `
+
+                            <div
+                                class="legend-item"
+                            >
+
+                                <span
+                                    class="legend-dot"
+                                    style="background:${value.color}"
+                                ></span>
+
+                                <span>
+                                    ${escapeHtml(
+                                        value.name
+                                    )}
+                                </span>
+
+                            </div>
+
+                        `
+                    )
+
+                    .join("")
+                }
+
+            </div>
+
+        </div>
+    `;
+
+
+    calendar.innerHTML =
+        html;
+
+
+    calendar
+        .querySelectorAll(
+            "[data-date]"
+        )
+
+        .forEach(button => {
+
+            button.addEventListener(
+                "click",
+                () => {
+
+                    showCalendarDay(
+                        button.dataset.date
+                    );
+
+                }
+            );
+
+        });
+}
+
+
+/* =========================================================
+   SZCZEGÓŁY DNIA W KALENDARZU
+   ========================================================= */
+
+function showCalendarDay(iso) {
+
+    const details =
+        document.getElementById(
+            "calendarDetails"
+        );
+
+
+    if (!details) {
+        return;
+    }
+
+
+    const types =
+        getWasteForDate(
+            iso
+        );
+
+
+    const date =
+        formatIsoDate(
+            iso
+        );
+
+
+    if (!types.length) {
+
+        details.innerHTML = `
+
+            <h3>
+                ${escapeHtml(date)}
+            </h3>
+
+            <p>
+                Brak odbioru dla wybranego adresu.
+            </p>
+
+        `;
+
+        return;
+    }
+
+
+    details.innerHTML = `
+
+        <h3>
+            ${escapeHtml(date)}
+        </h3>
+
+        ${
+            types
+                .map(
+                    type => `
+
+                        <div class="line">
+
+                            <b>
+                                ${escapeHtml(
+                                    WASTE_TYPES[
+                                        type
+                                    ].name
+                                )}
+                            </b>
+
+                            <small>
+                                ${
+                                    WASTE_TYPES[
+                                        type
+                                    ].bag
+                                        ? `(${escapeHtml(
+                                            WASTE_TYPES[
+                                                type
+                                            ].bag
+                                        )})`
+                                        : ""
+                                }
+                            </small>
+
+                        </div>
+
+                    `
+                )
+                .join("")
+        }
+
+    `;
+}
+
+
+/* =========================================================
+   INFORMACJA O WYBRANYM ADRESIE
+   ========================================================= */
+
+function renderCalendarDetails() {
+
+    const details =
+        document.getElementById(
+            "calendarDetails"
+        );
+
+
+    if (!details) {
+        return;
+    }
+
+
+    if (!selectedStreet) {
+
+        details.innerHTML = `
+
+            <h3>
+                Terminy dla wybranego adresu
+            </h3>
+
+            <p>
+                Wybierz ulicę na ekranie Start,
+                aby zobaczyć jej terminy
+                w kalendarzu.
+            </p>
+
+        `;
+
+        return;
+    }
+
+
+    const zones =
+        getStreetZones(
+            selectedStreet
+        );
+
+
+    details.innerHTML = `
+
+        <h3>
+            ${escapeHtml(
+                selectedStreet
+            )}
+        </h3>
+
+        <p>
+            Zmieszane:
+            <b>
+                ${escapeHtml(
+                    zones.mixed ||
+                    "brak w danych"
+                )}
+            </b>
+
+            ·
+
+            Segregowane:
+            <b>
+                ${escapeHtml(
+                    zones.segregated ||
+                    "brak w danych"
+                )}
+            </b>
+        </p>
+
+    `;
+}
+
+
+/* =========================================================
+   ZMIANA MIESIĄCA
+   ========================================================= */
+
+function changeMonth(delta) {
+
+    currentMonth +=
+        delta;
+
+
+    if (
+        currentMonth < 0
+    ) {
+
+        currentMonth = 11;
+
+        currentYear--;
+
+    }
+
+
+    if (
+        currentMonth > 11
+    ) {
+
+        currentMonth = 0;
+
+        currentYear++;
+
+    }
+
+
+    renderCalendar();
+}
+
+
+/* =========================================================
+   PRZYCISKI POPRZEDNI / NASTĘPNY MIESIĄC
+   ========================================================= */
+
+document.addEventListener(
+    "click",
+    event => {
+
+        if (
+            event.target.id ===
+            "prev"
+        ) {
+
+            changeMonth(-1);
+
+        }
+
+
+        if (
+            event.target.id ===
+            "next"
+        ) {
+
+            changeMonth(1);
+
+        }
+
+    }
+);
+
+
+/* =========================================================
+   ULUBIONE
+   ========================================================= */
+
+function getFavorites() {
+
+    try {
+
+        return JSON.parse(
+            localStorage.getItem(
+                "favorites"
+            ) || "[]"
+        );
+
+    } catch {
+
+        return [];
+
+    }
+}
+
+
+function saveFavorites(items) {
+
+    localStorage.setItem(
+        "favorites",
+        JSON.stringify(items)
+    );
+}
+
+
+/* =========================================================
+   GWIAZDKA ULUBIONYCH
+   ========================================================= */
+
+function updateFavoriteStar() {
+
+    const button =
+        document.getElementById(
+            "favoriteCurrent"
+        );
+
+
+    if (!button) {
+        return;
+    }
+
+
+    const exists =
+        getFavorites().some(
+            item =>
+                sameStreet(
+                    item.street,
+                    selectedStreet
+                )
+        );
+
+
+    button.textContent =
+        exists
+            ? "★"
+            : "☆";
+}
+
+
+/* =========================================================
+   MODAL ULUBIONEGO
+   ========================================================= */
+
+function openFavoriteModal(street) {
+
+    pendingFavoriteStreet =
+        street;
+
+
+    const address =
+        document.getElementById(
+            "modalAddress"
+        );
+
+
+    const name =
+        document.getElementById(
+            "favoriteName"
+        );
+
+
+    if (address) {
+        address.textContent =
+            street;
+    }
+
+
+    if (name) {
+        name.value =
+            street;
+    }
+
+
+    document
+        .getElementById(
+            "modal"
+        )
+        ?.classList
+        .remove("hidden");
+
+
+    setTimeout(
+        () => {
+
+            document
+                .getElementById(
+                    "favoriteName"
+                )
+                ?.focus();
+
+        },
+        50
+    );
+}
+
+
+/* =========================================================
+   ZAMKNIĘCIE MODALA
+   ========================================================= */
+
+function closeModal() {
+
+    document
+        .getElementById(
+            "modal"
+        )
+        ?.classList
+        .add("hidden");
+
+
+    pendingFavoriteStreet =
+        "";
+}
+
+
+/* =========================================================
+   ZAPIS ULUBIONEGO
+   ========================================================= */
+
+function saveFavorite() {
+
+    if (
+        !pendingFavoriteStreet
+    ) {
+        return;
+    }
+
+
+    const input =
+        document.getElementById(
+            "favoriteName"
+        );
+
+
+    const name =
+        input?.value.trim() ||
+        pendingFavoriteStreet;
+
+
+    const favorites =
+        getFavorites()
+            .filter(
+                item =>
+                    !sameStreet(
+                        item.street,
+                        pendingFavoriteStreet
+                    )
+            );
+
+
+    favorites.push({
+
+        street:
+            pendingFavoriteStreet,
+
+        name:
+            name
+
+    });
+
+
+    saveFavorites(
+        favorites
+    );
+
+
+    closeModal();
+
+    updateFavoriteStar();
+
+    renderFavorites();
+}
+
+
+/* =========================================================
+   USUWANIE ULUBIONEGO
+   ========================================================= */
+
+function removeFavorite(street) {
+
+    saveFavorites(
+
+        getFavorites()
+            .filter(
+                item =>
+                    !sameStreet(
+                        item.street,
+                        street
+                    )
+            )
+
+    );
+
+
+    renderFavorites();
+
+    updateFavoriteStar();
+}
+
+
+/* =========================================================
+   WYŚWIETLANIE ULUBIONYCH
+   ========================================================= */
+
+function renderFavorites() {
+
+    const list =
+        document.getElementById(
+            "favoritesList"
+        );
+
+    const empty =
+        document.getElementById(
+            "favoritesEmpty"
+        );
+
+
+    if (
+        !list ||
+        !empty
+    ) {
+        return;
+    }
+
+
+    const favorites =
+        getFavorites();
+
+
+    empty.classList.toggle(
+        "hidden",
+        favorites.length > 0
+    );
+
+
+    list.innerHTML =
+        favorites
+
+            .map(
+                item => `
+
+                    <div
+                        class="favorite card"
+                    >
+
+                        <div class="star2">
+                            ★
+                        </div>
+
+                        <div class="fi">
+
+                            <b>
+                                ${escapeHtml(
+                                    item.name
+                                )}
+                            </b>
+
+                            <small>
+                                ${escapeHtml(
+                                    item.street
+                                )}
+                            </small>
+
+                        </div>
+
+                        <button
+                            type="button"
+                            data-open-fav="${escapeAttribute(
+                                item.street
+                            )}"
+                        >
+                            Otwórz
+                        </button>
+
+                        <button
+                            type="button"
+                            class="del"
+                            data-del-fav="${escapeAttribute(
+                                item.street
+                            )}"
+                        >
+                            Usuń
+                        </button>
+
+                    </div>
+
+                `
+            )
+
+            .join("");
+
+
+    list
+        .querySelectorAll(
+            "[data-open-fav]"
+        )
+
+        .forEach(button => {
+
+            button.addEventListener(
+                "click",
+                () => {
+
+                    selectStreet(
+                        button.dataset.openFav
+                    );
+
+                }
+            );
+
+        });
+
+
+    list
+        .querySelectorAll(
+            "[data-del-fav]"
+        )
+
+        .forEach(button => {
+
+            button.addEventListener(
+                "click",
+                () => {
+
+                    removeFavorite(
+                        button.dataset.delFav
+                    );
+
+                }
+            );
+
+        });
+}
+
+
+/* =========================================================
+   USTAWIENIA
+   ========================================================= */
+
+function setupSettings() {
+
+    const dark =
+        document.getElementById(
+            "dark"
+        );
+
+    const notifications =
+        document.getElementById(
+            "notifications"
+        );
+
+
+    /* TRYB CIEMNY */
+
+    const savedDark =
+        localStorage.getItem(
+            "dark"
+        ) === "true";
+
+
+    if (dark) {
+
+        dark.checked =
+            savedDark;
+
+
+        document.body.classList.toggle(
+            "dark",
+            savedDark
+        );
+
+
+        dark.addEventListener(
+            "change",
+            () => {
+
+                localStorage.setItem(
+                    "dark",
+                    dark.checked
+                );
+
+
+                document.body.classList.toggle(
+                    "dark",
+                    dark.checked
+                );
+
+            }
+        );
+
+    }
+
+
+    /* POWIADOMIENIA */
+
+    if (notifications) {
+
+        notifications.checked =
+            localStorage.getItem(
+                "notifications"
+            ) === "true";
+
+
+        notifications.addEventListener(
+            "change",
+            async () => {
+
+                if (
+                    notifications.checked &&
+                    "Notification" in window &&
+                    Notification.permission ===
+                        "default"
+                ) {
+
+                    await Notification.requestPermission();
+
+                }
+
+
+                const granted =
+                    notifications.checked &&
+                    (
+                        !("Notification" in window) ||
+                        Notification.permission ===
+                            "granted"
+                    );
+
+
+                notifications.checked =
+                    granted;
+
+
+                localStorage.setItem(
+                    "notifications",
+                    granted
+                        ? "true"
+                        : "false"
+                );
+
+            }
+        );
+
+    }
+
+
+    /* WYCZYŚĆ ULUBIONE */
+
+    document
+        .getElementById(
+            "clearFavorites"
+        )
+        ?.addEventListener(
+            "click",
+            () => {
+
+                if (
+                    confirm(
+                        "Usunąć wszystkie ulubione adresy?"
+                    )
+                ) {
+
+                    saveFavorites([]);
+
+                    renderFavorites();
+
+                    updateFavoriteStar();
+
+                }
+
+            }
+        );
+
+
+    /* INFORMACJE */
+
+    document
+        .getElementById(
+            "about"
+        )
+        ?.addEventListener(
+            "click",
+            () => {
+
+                alert(
+                    "Sochaczew Odpady\nHarmonogram 2026"
+                );
+
+            }
+        );
+}
+
+
+/* =========================================================
+   OBSŁUGA GWIAZDKI
+   ========================================================= */
+
+function setupFavorite() {
+
+    document
+        .getElementById(
+            "favoriteCurrent"
+        )
+        ?.addEventListener(
+            "click",
+            () => {
+
+                if (!selectedStreet) {
+                    return;
+                }
+
+
+                const exists =
+                    getFavorites().some(
+                        item =>
+                            sameStreet(
+                                item.street,
+                                selectedStreet
+                            )
+                    );
+
+
+                if (exists) {
+
+                    removeFavorite(
+                        selectedStreet
+                    );
+
+                } else {
+
+                    openFavoriteModal(
+                        selectedStreet
+                    );
+
+                }
+
+            }
+        );
+
+
+    document
+        .querySelectorAll(
+            "[data-close]"
+        )
+
+        .forEach(element => {
+
+            element.addEventListener(
+                "click",
+                closeModal
+            );
+
+        });
+
+
+    document
+        .getElementById(
+            "saveFavorite"
+        )
+        ?.addEventListener(
+            "click",
+            saveFavorite
+        );
+
+
+    document
+        .getElementById(
+            "favoriteName"
+        )
+        ?.addEventListener(
+            "keydown",
+            event => {
+
+                if (
+                    event.key ===
+                    "Enter"
+                ) {
+
+                    saveFavorite();
+
+                }
+
+            }
+        );
+}
+
+
+/* =========================================================
+   WCZYTANIE ZAPISANEJ ULICY
+   ========================================================= */
+
+function loadSavedStreet() {
+
+    if (!selectedStreet) {
+        return;
+    }
+
+
+    const found =
+        findStreet(
+            selectedStreet
+        );
+
+
+    if (found) {
+
+        showStreetSchedule(
+            found
+        );
+
+    }
+}
+
+
+/* =========================================================
+   DATY
+   ========================================================= */
+
+function parseDate(value) {
+
+    const parts =
+        String(value)
+            .split(".")
+            .map(Number);
+
+
+    const day =
+        parts[0];
+
+    const month =
+        parts[1];
+
+    const year =
+        parts[2];
+
+
+    return new Date(
+        year,
+        month - 1,
+        day
+    );
+}
+
+
+function formatDate(value) {
+
+    return parseDate(
+        value
+    ).toLocaleDateString(
+        "pl-PL",
+        {
+            day: "numeric",
+            month: "long",
+            year: "numeric"
+        }
+    );
+}
+
+
+function toPolishDate(iso) {
+
+    const parts =
+        iso.split("-");
+
+
+    const year =
+        parts[0];
+
+    const month =
+        parts[1];
+
+    const day =
+        parts[2];
+
+
+    return `${day}.${month}.${year}`;
+}
+
+
+function formatIsoDate(iso) {
+
+    const parts =
+        iso.split("-");
+
+
+    const year =
+        Number(parts[0]);
+
+    const month =
+        Number(parts[1]);
+
+    const day =
+        Number(parts[2]);
+
+
+    return new Date(
+        year,
+        month - 1,
+        day
+    ).toLocaleDateString(
+        "pl-PL",
+        {
+            day: "numeric",
+            month: "long",
+            year: "numeric"
+        }
+    );
+}
+
+
+/* =========================================================
+   BEZPIECZNE HTML
+   ========================================================= */
+
+function escapeHtml(value) {
+
+    return String(value)
+        .replace(
+            /&/g,
+            "&amp;"
+        )
+        .replace(
+            /</g,
+            "&lt;"
+        )
+        .replace(
+            />/g,
+            "&gt;"
+        )
+        .replace(
+            /"/g,
+            "&quot;"
+        )
+        .replace(
+            /'/g,
+            "&#039;"
+        );
+}
+
+
+function escapeAttribute(value) {
+
+    return escapeHtml(
+        value
+    ).replace(
+        /`/g,
+        "&#096;"
+    );
+}
+
+
+/* =========================================================
+   START APLIKACJI
+   ========================================================= */
+
+async function start() {
+
+    try {
+
+        const response =
+            await fetch(
+                "./data/schedule.json",
+                {
+                    cache:
+                        "no-store"
+                }
+            );
+
+
+        if (!response.ok) {
+
+            throw new Error(
+                `HTTP ${response.status}`
+            );
+
+        }
+
+
+        schedule =
+            await response.json();
+
+
+        if (
+            !schedule ||
+            !schedule.streetGroups ||
+            !schedule.mixed ||
+            !schedule.segregated
+        ) {
+
+            throw new Error(
+                "Nieprawidłowy format harmonogramu"
+            );
+
+        }
+
+
+        setupSearch();
+
+        setupNavigation();
+
+        setupSettings();
+
+        setupFavorite();
+
+        renderFavorites();
+
+        renderCalendar();
+
+        loadSavedStreet();
+
+
+    } catch (error) {
+
+        console.error(
+            "Błąd aplikacji:",
+            error
+        );
+
+
+        const result =
+            document.getElementById(
+                "result"
+            );
+
+
+        if (result) {
+
+            result.innerHTML = `
+
+                <div class="error-box">
+
+                    <strong>
+                        Błąd danych
+                    </strong>
+
+                    <p>
+                        Nie udało się wczytać
+                        harmonogramu.
+                    </p>
+
+                    <small>
+                        ${escapeHtml(
+                            error.message
+                        )}
+                    </small>
+
+                </div>
+
+            `;
+
+        }
+
+    }
+}
+
+
+/* =========================================================
+   URUCHOMIENIE
+   ========================================================= */
+
+document.addEventListener(
+    "DOMContentLoaded",
+    start
+);
