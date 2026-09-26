@@ -1,12 +1,14 @@
 /* =========================================================
    SOCHACZEW ODPADY
-   Pełny plik app.js
+   ZOPTYMALIZOWANY app.js
    ========================================================= */
 
-/* ===== KOLORY I NAZWY ODPADÓW =====
-   Jeśli kiedyś będziesz chciał zmienić kolor,
-   zmieniasz go tylko tutaj.
-*/
+
+/* =========================================================
+   KOLORY I NAZWY ODPADÓW
+   ZMIENIASZ KOLORY TYLKO TUTAJ
+   ========================================================= */
+
 const WASTE_TYPES = {
     yellow: {
         name: "Tworzywa sztuczne i metale",
@@ -40,7 +42,7 @@ const WASTE_TYPES = {
 
     mixed: {
         name: "Odpady zmieszane",
-        bag: "worek czarny",
+        bag: null,
         color: "#222222"
     },
 
@@ -59,7 +61,7 @@ const WASTE_TYPES = {
 
 
 /* =========================================================
-   ZMIENNE APLIKACJI
+   GŁÓWNE ZMIENNE
    ========================================================= */
 
 let schedule = null;
@@ -68,16 +70,31 @@ let selectedStreet =
     localStorage.getItem("selectedStreet") || "";
 
 let currentMonth = new Date().getMonth();
-
 let currentYear = new Date().getFullYear();
 
 let pendingFavoriteStreet = "";
 
 
 /* =========================================================
+   CACHE
+   Najważniejsza część optymalizacji telefonu.
+   ========================================================= */
+
+let streetListCache = null;
+
+let normalizedStreetListCache = null;
+
+const streetLookupCache = new Map();
+
+const streetZonesCache = new Map();
+
+const streetScheduleCache = new Map();
+
+const calendarDateCache = new Map();
+
+
+/* =========================================================
    ALIASY ULIC
-   Dane mieszane i segregowane mają czasami różne nazwy
-   tej samej ulicy.
    ========================================================= */
 
 const STREET_ALIASES = {
@@ -141,30 +158,23 @@ const STREET_ALIASES = {
 
 
 /* =========================================================
-   NORMALIZACJA NAZW ULIC
+   NORMALIZACJA ULIC
    ========================================================= */
 
 function normalizeStreet(value) {
 
     return String(value || "")
         .toLocaleLowerCase("pl-PL")
-
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
-
         .replace(/ł/g, "l")
-
         .replace(/\([^)]*\)/g, "")
-
         .replace(/\bul\.?\s*/g, "")
-
         .replace(/\bulica\s*/g, "")
-
         .replace(/\s+/g, " ")
-
         .replace(/[.,]/g, "")
-
         .trim();
+
 }
 
 
@@ -180,11 +190,12 @@ function removeHouseNumber(value) {
             ""
         )
         .trim();
+
 }
 
 
 /* =========================================================
-   ALIASY
+   ALIAS KEYS
    ========================================================= */
 
 function aliasKeys(value) {
@@ -212,18 +223,17 @@ function aliasKeys(value) {
     Object.entries(STREET_ALIASES)
         .forEach(([key, values]) => {
 
-            const normalizedKey =
-                normalizeStreet(key);
-
-            const found =
+            if (
                 values.some(
                     value =>
                         normalizeStreet(value) === base
+                )
+            ) {
+                result.add(
+                    normalizeStreet(key)
                 );
-
-            if (found) {
-                result.add(normalizedKey);
             }
+
         });
 
     return [...result].filter(Boolean);
@@ -237,51 +247,61 @@ function aliasKeys(value) {
 function sameStreet(a, b) {
 
     const aa = aliasKeys(a);
-
     const bb = aliasKeys(b);
 
-    if (
-        aa.some(
-            value =>
-                bb.includes(value)
-        )
-    ) {
-        return true;
+    for (const x of aa) {
+
+        if (bb.includes(x)) {
+            return true;
+        }
+
     }
 
     /*
-      Obsługa np.
-      "Bolesława Chrobrego"
-      oraz
-      "Chrobrego"
+       Obsługa np.
+       Bolesława Chrobrego
+       Chrobrego
     */
 
-    return aa.some(x =>
-        bb.some(y => {
+    for (const x of aa) {
 
-            if (
-                x.length < 6 ||
-                y.length < 6
-            ) {
-                return false;
+        if (x.length < 6) {
+            continue;
+        }
+
+        for (const y of bb) {
+
+            if (y.length < 6) {
+                continue;
             }
 
-            return (
+            if (
                 x.endsWith(" " + y) ||
                 y.endsWith(" " + x)
-            );
-        })
-    );
+            ) {
+                return true;
+            }
+
+        }
+
+    }
+
+    return false;
 }
 
 
 /* =========================================================
    WSZYSTKIE ULICE
+   Liczone tylko raz.
    ========================================================= */
 
 function allStreets() {
 
-    const result = new Set();
+    if (streetListCache) {
+        return streetListCache;
+    }
+
+    const set = new Set();
 
     const groups =
         schedule?.streetGroups || {};
@@ -294,23 +314,45 @@ function allStreets() {
 
                     (list || [])
                         .forEach(street => {
-
-                            result.add(street);
-
+                            set.add(street);
                         });
 
                 });
 
         });
 
-    return [...result]
-        .sort(
+    streetListCache =
+        [...set].sort(
             (a, b) =>
                 a.localeCompare(
                     b,
                     "pl-PL"
                 )
         );
+
+    return streetListCache;
+}
+
+
+/* =========================================================
+   ZNORMALIZOWANE ULICE
+   Liczone tylko raz.
+   ========================================================= */
+
+function getNormalizedStreetList() {
+
+    if (normalizedStreetListCache) {
+        return normalizedStreetListCache;
+    }
+
+    normalizedStreetListCache =
+        allStreets().map(street => ({
+            street,
+            normalized:
+                normalizeStreet(street)
+        }));
+
+    return normalizedStreetListCache;
 }
 
 
@@ -320,58 +362,82 @@ function allStreets() {
 
 function findStreet(query) {
 
-    const withoutNumber =
+    const q =
         removeHouseNumber(query);
 
-    if (!withoutNumber) {
+    if (!q) {
         return null;
+    }
+
+    const nq =
+        normalizeStreet(q);
+
+    if (!nq) {
+        return null;
+    }
+
+    if (streetLookupCache.has(nq)) {
+
+        return streetLookupCache.get(nq);
+
     }
 
     const streets =
         allStreets();
 
-    /* Najpierw dokładne dopasowanie */
+    /*
+       Najpierw dokładne dopasowanie.
+    */
 
-    const exact =
-        streets.find(
-            street =>
-                sameStreet(
-                    withoutNumber,
-                    street
-                )
-        );
+    for (const street of streets) {
 
-    if (exact) {
-        return exact;
+        if (sameStreet(q, street)) {
+
+            streetLookupCache.set(
+                nq,
+                street
+            );
+
+            return street;
+        }
+
     }
 
-    /* Potem częściowe */
+    /*
+       Potem częściowe dopasowanie.
+    */
 
-    const normalizedQuery =
-        normalizeStreet(
-            withoutNumber
-        );
+    const normalized =
+        getNormalizedStreetList();
 
-    return streets.find(street => {
+    for (const item of normalized) {
 
-        const normalizedStreet =
-            normalizeStreet(street);
+        if (
+            item.normalized.includes(nq) ||
+            nq.includes(item.normalized)
+        ) {
 
-        return (
-            normalizedStreet.includes(
-                normalizedQuery
-            ) ||
-            normalizedQuery.includes(
-                normalizedStreet
-            )
-        );
+            streetLookupCache.set(
+                nq,
+                item.street
+            );
 
-    }) || null;
+            return item.street;
+        }
+
+    }
+
+    streetLookupCache.set(
+        nq,
+        null
+    );
+
+    return null;
 }
 
 
 /* =========================================================
-   ZNAJDOWANIE REGIONU ZMIESZANYCH
+   REGION ZMIESZANYCH
    ========================================================= */
 
 function findMixedRegion(street) {
@@ -386,11 +452,7 @@ function findMixedRegion(street) {
 
         if (
             (streets || []).some(
-                item =>
-                    sameStreet(
-                        street,
-                        item
-                    )
+                s => sameStreet(street, s)
             )
         ) {
 
@@ -405,7 +467,7 @@ function findMixedRegion(street) {
 
 
 /* =========================================================
-   ZNAJDOWANIE STREFY SEGREGOWANYCH
+   STREFA SEGREGOWANYCH
    ========================================================= */
 
 function findSegregatedZone(street) {
@@ -420,11 +482,7 @@ function findSegregatedZone(street) {
 
         if (
             (streets || []).some(
-                item =>
-                    sameStreet(
-                        street,
-                        item
-                    )
+                s => sameStreet(street, s)
             )
         ) {
 
@@ -439,12 +497,31 @@ function findSegregatedZone(street) {
 
 
 /* =========================================================
-   STREFY DLA KONKRETNEJ ULICY
+   STREFY ULICY
+   CACHE
    ========================================================= */
 
 function getStreetZones(street) {
 
-    return {
+    if (!street) {
+
+        return {
+            mixed: null,
+            segregated: null
+        };
+
+    }
+
+    const key =
+        normalizeStreet(street);
+
+    if (streetZonesCache.has(key)) {
+
+        return streetZonesCache.get(key);
+
+    }
+
+    const zones = {
 
         mixed:
             findMixedRegion(street),
@@ -453,22 +530,24 @@ function getStreetZones(street) {
             findSegregatedZone(street)
 
     };
+
+    streetZonesCache.set(
+        key,
+        zones
+    );
+
+    return zones;
 }
 
 
 /* =========================================================
-   KONWERSJA RODZAJU ODPADU
+   TYP ODPADU
    ========================================================= */
 
 function convertPickupType(type) {
 
     const value =
         normalizeStreet(type);
-
-    /*
-      Żółty + niebieski
-      MUSZĄ zostać dwoma osobnymi rodzajami.
-    */
 
     if (
         value.includes("zolty") &&
@@ -534,28 +613,48 @@ function convertPickupType(type) {
     }
 
     return [];
+
 }
 
 
 /* =========================================================
-   TERMINY DLA KONKRETNEJ ULICY
+   ODBIORY DLA ULICY
+   CACHE
    ========================================================= */
 
 function getPickupsForStreet(street) {
 
-    if (!street) {
+    if (
+        !street ||
+        !schedule
+    ) {
+
         return [];
+
+    }
+
+    const canonical =
+        findStreet(street) || street;
+
+    if (
+        streetScheduleCache.has(canonical)
+    ) {
+
+        return streetScheduleCache.get(
+            canonical
+        );
+
     }
 
     const zones =
-        getStreetZones(street);
+        getStreetZones(canonical);
 
     const result = [];
 
 
-    /* -----------------------------------------
-       ODPADY ZMIESZANE
-       ----------------------------------------- */
+    /* =========================
+       ZMIESZANE
+       ========================= */
 
     if (zones.mixed) {
 
@@ -574,7 +673,7 @@ function getPickupsForStreet(street) {
 
                     result.push({
 
-                        date: date,
+                        date,
 
                         type: "mixed"
 
@@ -587,9 +686,9 @@ function getPickupsForStreet(street) {
     }
 
 
-    /* -----------------------------------------
-       ODPADY SEGREGOWANE
-       ----------------------------------------- */
+    /* =========================
+       SEGREGOWANE
+       ========================= */
 
     if (zones.segregated) {
 
@@ -618,8 +717,7 @@ function getPickupsForStreet(street) {
                             date:
                                 pickup.date,
 
-                            type:
-                                type
+                            type
 
                         });
 
@@ -632,16 +730,121 @@ function getPickupsForStreet(street) {
     }
 
 
-    return result.sort(
+    result.sort(
         (a, b) =>
             parseDate(a.date) -
             parseDate(b.date)
     );
+
+
+    /*
+       Zapamiętujemy gotowy wynik.
+    */
+
+    streetScheduleCache.set(
+        canonical,
+        result
+    );
+
+
+    return result;
 }
 
 
 /* =========================================================
-   ODPADY W KONKRETNYM DNIU
+   MAPA KALENDARZA DLA ULICY
+   Najważniejsza optymalizacja.
+   Zamiast przeszukiwać cały harmonogram dla każdego dnia,
+   robimy mapę daty -> odpady tylko raz.
+   ========================================================= */
+
+function buildCalendarCache(street) {
+
+    if (!street) {
+        return;
+    }
+
+    const canonical =
+        findStreet(street) || street;
+
+    const pickups =
+        getPickupsForStreet(canonical);
+
+    /*
+       Usuwamy stare wpisy tej ulicy.
+    */
+
+    for (
+        const key
+        of calendarDateCache.keys()
+    ) {
+
+        if (
+            key.startsWith(
+                canonical + "|"
+            )
+        ) {
+
+            calendarDateCache.delete(key);
+
+        }
+
+    }
+
+
+    const dateMap = new Map();
+
+
+    pickups.forEach(item => {
+
+        const iso =
+            toIsoDate(item.date);
+
+        if (!dateMap.has(iso)) {
+
+            dateMap.set(
+                iso,
+                []
+            );
+
+        }
+
+        const list =
+            dateMap.get(iso);
+
+        if (
+            !list.includes(item.type)
+        ) {
+
+            list.push(
+                item.type
+            );
+
+        }
+
+    });
+
+
+    /*
+       Zapisujemy każdą datę.
+    */
+
+    dateMap.forEach(
+        (types, iso) => {
+
+            calendarDateCache.set(
+                `${canonical}|${iso}`,
+                types
+            );
+
+        }
+    );
+
+}
+
+
+/* =========================================================
+   ODPADY DLA KONKRETNEJ DATY
    ========================================================= */
 
 function getWasteForDate(
@@ -653,35 +856,39 @@ function getWasteForDate(
         return [];
     }
 
-    const wantedDate =
-        toPolishDate(date);
+    const canonical =
+        findStreet(street) || street;
 
-    const pickups =
-        getPickupsForStreet(
-            street
+    const key =
+        `${canonical}|${date}`;
+
+    if (
+        calendarDateCache.has(key)
+    ) {
+
+        return calendarDateCache.get(
+            key
         );
 
-    return [
-        ...new Set(
+    }
 
-            pickups
-                .filter(
-                    item =>
-                        item.date ===
-                        wantedDate
-                )
-                .map(
-                    item =>
-                        item.type
-                )
+    /*
+       Jeśli mapa nie została zbudowana,
+       budujemy ją tylko raz.
+    */
 
-        )
-    ];
+    buildCalendarCache(canonical);
+
+    return (
+        calendarDateCache.get(key) ||
+        []
+    );
+
 }
 
 
 /* =========================================================
-   GRUPOWANIE TERMINÓW PO DACIE
+   GRUPOWANIE DAT
    ========================================================= */
 
 function groupByDate(pickups) {
@@ -705,9 +912,7 @@ function groupByDate(pickups) {
             map.get(item.date);
 
         if (
-            !list.includes(
-                item.type
-            )
+            !list.includes(item.type)
         ) {
 
             list.push(
@@ -722,19 +927,18 @@ function groupByDate(pickups) {
     return [
         ...map.entries()
     ]
-
         .map(
             ([date, types]) => ({
                 date,
                 types
             })
         )
-
         .sort(
             (a, b) =>
                 parseDate(a.date) -
                 parseDate(b.date)
         );
+
 }
 
 
@@ -755,20 +959,19 @@ function nextPickup(street) {
     );
 
     return groupByDate(
-        getPickupsForStreet(
-            street
-        )
-    ).find(
-        item =>
-            parseDate(
-                item.date
-            ) >= today
-    ) || null;
+        getPickupsForStreet(street)
+    )
+        .find(
+            item =>
+                parseDate(item.date) >=
+                today
+        ) || null;
+
 }
 
 
 /* =========================================================
-   WYŚWIETLENIE TERMINU
+   WYŚWIETLANIE POJEDYNCZEGO ODBIORU
    ========================================================= */
 
 function renderPickup(item) {
@@ -777,29 +980,24 @@ function renderPickup(item) {
         item.types
             .map(
                 type =>
-                    WASTE_TYPES[type]
-                        .name
+                    WASTE_TYPES[type].name
             )
             .join(" + ");
 
 
     const bags =
         item.types
-
             .map(type => {
 
                 const bag =
-                    WASTE_TYPES[type]
-                        .bag;
+                    WASTE_TYPES[type].bag;
 
                 return bag
                     ? `(${bag})`
                     : "";
 
             })
-
             .filter(Boolean)
-
             .join(" + ");
 
 
@@ -811,25 +1009,28 @@ function renderPickup(item) {
             </div>
 
             <div>
+
                 <b>
                     ${escapeHtml(names)}
                 </b>
 
-                <small>
-                    ${escapeHtml(bags)}
-                </small>
+                ${
+                    bags
+                        ? `<small>${escapeHtml(bags)}</small>`
+                        : ""
+                }
+
             </div>
 
             <div class="date">
                 ${escapeHtml(
-                    formatDate(
-                        item.date
-                    )
+                    formatDate(item.date)
                 )}
             </div>
 
         </div>
     `;
+
 }
 
 
@@ -839,54 +1040,63 @@ function renderPickup(item) {
 
 function showStreetSchedule(street) {
 
-    selectedStreet = street;
+    selectedStreet =
+        street;
 
     localStorage.setItem(
         "selectedStreet",
         street
     );
 
-    const emptyState =
-        document.getElementById(
-            "emptyState"
-        );
 
-    if (emptyState) {
-        emptyState.classList.add("hidden");
-    }
+    /*
+       Przygotowanie cache
+       tylko dla wybranej ulicy.
+    */
 
-    const addressCard =
+    getPickupsForStreet(
+        street
+    );
+
+    buildCalendarCache(
+        street
+    );
+
+
+    document
+        .getElementById("emptyState")
+        ?.classList.add("hidden");
+
+
+    const card =
         document.getElementById(
             "selectedAddress"
         );
 
-    const addressText =
+    const text =
         document.getElementById(
             "selectedAddressText"
         );
 
+
     if (
-        addressCard &&
-        addressText
+        card &&
+        text
     ) {
-        addressCard.classList.remove("hidden");
-        addressText.textContent = street;
+
+        card.classList.remove(
+            "hidden"
+        );
+
+        text.textContent =
+            street;
+
     }
+
 
     updateFavoriteStar();
 
-    /*
-     * POBIERAMY TERMINY DLA WYBRANEJ ULICY
-     */
-    const allPickups =
-        getPickupsForStreet(street);
 
-    /*
-     * DZISIAJ - godzina 00:00
-     *
-     * Dzięki temu termin dzisiejszy
-     * nadal jest traktowany jako najbliższy.
-     */
     const today =
         new Date();
 
@@ -897,63 +1107,52 @@ function showStreetSchedule(street) {
         0
     );
 
-    /*
-     * USUWAMY WSZYSTKIE TERMINY,
-     * KTÓRE JUŻ MINĘŁY.
-     */
-    const upcomingPickups =
-        allPickups.filter(
-            item =>
-                parseDate(item.date) >= today
-        );
 
-    /*
-     * Grupujemy pozostałe terminy
-     * według daty.
-     */
-    const pickups =
+    const upcoming =
         groupByDate(
-            upcomingPickups
-        );
+            getPickupsForStreet(
+                street
+            )
+        )
+            .filter(
+                item =>
+                    parseDate(
+                        item.date
+                    ) >= today
+            );
 
-    /*
-     * Najbliższy termin.
-     */
+
     const next =
-        pickups.length
-            ? pickups[0]
-            : null;
+        upcoming[0] || null;
+
 
     const result =
         document.getElementById(
             "result"
         );
 
+
     if (!result) {
         return;
     }
 
-    /*
-     * Jeżeli nie ma już żadnego
-     * przyszłego terminu.
-     */
-    if (!pickups.length) {
+
+    if (!upcoming.length) {
 
         result.innerHTML = `
-
             <div class="card empty">
 
                 <h2>
-                    Brak kolejnych odbiorów
+                    Brak kolejnych terminów
                 </h2>
 
                 <p>
-                    Wszystkie dostępne terminy
-                    dla tej ulicy już minęły.
+                    Dla tej ulicy nie ma już
+                    kolejnych odbiorów
+                    w przekazanym harmonogramie.
                 </p>
 
             </div>
-
         `;
 
         renderCalendarDetails();
@@ -961,9 +1160,7 @@ function showStreetSchedule(street) {
         return;
     }
 
-    /*
-     * WYŚWIETLAMY TYLKO PRZYSZŁE TERMINY.
-     */
+
     result.innerHTML = `
 
         <div class="next card">
@@ -985,9 +1182,7 @@ function showStreetSchedule(street) {
                     next.types
                         .map(
                             type =>
-                                WASTE_TYPES[
-                                    type
-                                ].name
+                                WASTE_TYPES[type].name
                         )
                         .join(" + ")
                 )}
@@ -1003,7 +1198,7 @@ function showStreetSchedule(street) {
             </h2>
 
             ${
-                pickups
+                upcoming
                     .slice(0, 10)
                     .map(renderPickup)
                     .join("")
@@ -1013,7 +1208,9 @@ function showStreetSchedule(street) {
 
     `;
 
+
     renderCalendarDetails();
+
 }
 
 
@@ -1044,8 +1241,20 @@ function setupSearch() {
         !button ||
         !suggestions
     ) {
+
         return;
+
     }
+
+
+    /*
+       Opóźnienie wyszukiwania o jedną klatkę.
+       Dzięki temu telefon nie wykonuje
+       wyszukiwania przy każdym znaku
+       natychmiast.
+    */
+
+    let frame = null;
 
 
     function drawSuggestions() {
@@ -1060,10 +1269,11 @@ function setupSearch() {
                 "";
 
             return;
+
         }
 
 
-        const normalized =
+        const nq =
             normalizeStreet(
                 removeHouseNumber(
                     query
@@ -1071,31 +1281,42 @@ function setupSearch() {
             );
 
 
+        if (!nq) {
+
+            suggestions.innerHTML =
+                "";
+
+            return;
+
+        }
+
+
+        const normalized =
+            getNormalizedStreetList();
+
+
         const matches =
-            allStreets()
-
+            normalized
                 .filter(
-                    street =>
-                        normalizeStreet(
-                            street
-                        ).includes(
-                            normalized
-                        )
+                    item =>
+                        item.normalized
+                            .includes(nq)
                 )
-
-                .slice(0, 8);
+                .slice(0, 8)
+                .map(
+                    item =>
+                        item.street
+                );
 
 
         suggestions.innerHTML =
             matches
-
                 .map(
                     street => `
 
                         <button
                             class="suggestion"
                             data-street="${escapeAttribute(street)}"
-                            type="button"
                         >
 
                             <span>
@@ -1110,7 +1331,6 @@ function setupSearch() {
 
                     `
                 )
-
                 .join("");
 
 
@@ -1118,36 +1338,46 @@ function setupSearch() {
             .querySelectorAll(
                 "[data-street]"
             )
-
             .forEach(button => {
 
                 button.addEventListener(
                     "click",
                     () => {
 
-                        const street =
-                            button.dataset.street;
-
-                        input.value =
-                            street;
+                        selectStreet(
+                            button.dataset.street
+                        );
 
                         suggestions.innerHTML =
                             "";
 
-                        selectStreet(
-                            street
-                        );
+                        input.value =
+                            button.dataset.street;
 
                     }
                 );
 
             });
+
     }
 
 
     input.addEventListener(
         "input",
-        drawSuggestions
+        () => {
+
+            if (frame) {
+                cancelAnimationFrame(
+                    frame
+                );
+            }
+
+            frame =
+                requestAnimationFrame(
+                    drawSuggestions
+                );
+
+        }
     );
 
 
@@ -1156,13 +1386,12 @@ function setupSearch() {
         event => {
 
             if (
-                event.key ===
-                "Enter"
+                event.key === "Enter"
             ) {
 
                 event.preventDefault();
 
-                doSearch();
+                searchStreet();
 
             }
 
@@ -1172,11 +1401,11 @@ function setupSearch() {
 
     button.addEventListener(
         "click",
-        doSearch
+        searchStreet
     );
 
 
-    function doSearch() {
+    function searchStreet() {
 
         const found =
             findStreet(
@@ -1184,60 +1413,51 @@ function setupSearch() {
             );
 
 
-        suggestions.innerHTML =
-            "";
-
-
         if (!found) {
 
-            document
-                .getElementById(
-                    "emptyState"
-                )
-                ?.classList
-                .add("hidden");
-
+            suggestions.innerHTML = "";
 
             const result =
                 document.getElementById(
                     "result"
                 );
 
-
             if (result) {
 
                 result.innerHTML = `
+                    <div class="card empty">
 
-                    <div class="error-box">
-
-                        <strong>
+                        <h2>
                             Nie znaleziono ulicy
-                        </strong>
+                        </h2>
 
                         <p>
-                            Sprawdź pisownię
-                            lub wybierz ulicę
-                            z podpowiedzi.
+                            Sprawdź nazwę ulicy
+                            i spróbuj ponownie.
                         </p>
 
                     </div>
-
                 `;
 
             }
 
             return;
+
         }
 
+
+        suggestions.innerHTML =
+            "";
 
         input.value =
             found;
 
-
         selectStreet(
             found
         );
+
     }
+
 }
 
 
@@ -1247,13 +1467,18 @@ function setupSearch() {
 
 function selectStreet(street) {
 
+    const found =
+        findStreet(street) ||
+        street;
+
     showStreetSchedule(
-        street
+        found
     );
 
     switchPage(
         "home"
     );
+
 }
 
 
@@ -1267,21 +1492,48 @@ function setupNavigation() {
         .querySelectorAll(
             "[data-page]"
         )
-
         .forEach(button => {
 
             button.addEventListener(
                 "click",
-                () => {
-
+                () =>
                     switchPage(
                         button.dataset.page
-                    );
-
-                }
+                    )
             );
 
         });
+
+
+    document
+        .querySelectorAll(
+            "[data-home]"
+        )
+        .forEach(button => {
+
+            button.addEventListener(
+                "click",
+                () =>
+                    switchPage(
+                        "home"
+                    )
+            );
+
+        });
+
+
+    document
+        .getElementById(
+            "homeSettings"
+        )
+        ?.addEventListener(
+            "click",
+            () =>
+                switchPage(
+                    "settings"
+                )
+        );
+
 }
 
 
@@ -1292,39 +1544,27 @@ function setupNavigation() {
 function switchPage(page) {
 
     document
-        .querySelectorAll(
-            ".page"
-        )
-
-        .forEach(element => {
-
-            element.classList.remove(
+        .querySelectorAll(".page")
+        .forEach(p =>
+            p.classList.remove(
                 "active"
-            );
-
-        });
-
-
-    const target =
-        document.getElementById(
-            `${page}Page`
+            )
         );
 
 
-    if (target) {
-
-        target.classList.add(
+    document
+        .getElementById(
+            `${page}Page`
+        )
+        ?.classList.add(
             "active"
         );
-
-    }
 
 
     document
         .querySelectorAll(
             "nav [data-page]"
         )
-
         .forEach(button => {
 
             button.classList.toggle(
@@ -1336,8 +1576,7 @@ function switchPage(page) {
 
 
     if (
-        page ===
-        "favorites"
+        page === "favorites"
     ) {
 
         renderFavorites();
@@ -1346,8 +1585,7 @@ function switchPage(page) {
 
 
     if (
-        page ===
-        "calendar"
+        page === "calendar"
     ) {
 
         renderCalendar();
@@ -1355,6 +1593,7 @@ function switchPage(page) {
         renderCalendarDetails();
 
     }
+
 }
 
 
@@ -1416,6 +1655,17 @@ function renderCalendar() {
     }
 
 
+    const today =
+        new Date();
+
+    today.setHours(
+        0,
+        0,
+        0,
+        0
+    );
+
+
     let html = `
 
         <div class="calendar-weekdays">
@@ -1435,6 +1685,10 @@ function renderCalendar() {
     `;
 
 
+    /*
+       Puste pola przed pierwszym dniem.
+    */
+
     for (
         let i = 0;
         i < offset;
@@ -1449,6 +1703,10 @@ function renderCalendar() {
 
     }
 
+
+    /*
+       Dni miesiąca.
+    */
 
     for (
         let day = 1;
@@ -1470,17 +1728,11 @@ function renderCalendar() {
             );
 
 
-        const today =
-            new Date();
-
-
         const isToday =
             today.getFullYear() ===
                 currentYear &&
-
             today.getMonth() ===
                 currentMonth &&
-
             today.getDate() ===
                 day;
 
@@ -1488,14 +1740,15 @@ function renderCalendar() {
         html += `
 
             <button
-                type="button"
-                class="calendar-day
-                    ${types.length
+                class="calendar-day ${
+                    types.length
                         ? "has-pickup"
-                        : ""}
-                    ${isToday
+                        : ""
+                } ${
+                    isToday
                         ? "today"
-                        : ""}"
+                        : ""
+                }"
                 data-date="${iso}"
             >
 
@@ -1528,11 +1781,11 @@ function renderCalendar() {
             </button>
 
         `;
+
     }
 
 
     html += `
-
         </div>
 
         <div class="calendar-legend">
@@ -1547,31 +1800,29 @@ function renderCalendar() {
                     Object.entries(
                         WASTE_TYPES
                     )
+                        .map(
+                            ([key, value]) => `
 
-                    .map(
-                        ([key, value]) => `
+                                <div
+                                    class="legend-item"
+                                >
 
-                            <div
-                                class="legend-item"
-                            >
+                                    <span
+                                        class="legend-dot"
+                                        style="background:${value.color}"
+                                    ></span>
 
-                                <span
-                                    class="legend-dot"
-                                    style="background:${value.color}"
-                                ></span>
+                                    <span>
+                                        ${escapeHtml(
+                                            value.name
+                                        )}
+                                    </span>
 
-                                <span>
-                                    ${escapeHtml(
-                                        value.name
-                                    )}
-                                </span>
+                                </div>
 
-                            </div>
-
-                        `
-                    )
-
-                    .join("")
+                            `
+                        )
+                        .join("")
                 }
 
             </div>
@@ -1584,30 +1835,35 @@ function renderCalendar() {
         html;
 
 
-    calendar
-        .querySelectorAll(
-            "[data-date]"
-        )
+    /*
+       Jeden listener na cały kalendarz
+       zamiast osobnego listenera
+       dla każdego dnia.
+    */
 
-        .forEach(button => {
+    calendar.onclick =
+        event => {
 
-            button.addEventListener(
-                "click",
-                () => {
+            const button =
+                event.target.closest(
+                    "[data-date]"
+                );
 
-                    showCalendarDay(
-                        button.dataset.date
-                    );
+            if (!button) {
+                return;
+            }
 
-                }
+            showCalendarDay(
+                button.dataset.date
             );
 
-        });
+        };
+
 }
 
 
 /* =========================================================
-   SZCZEGÓŁY DNIA W KALENDARZU
+   SZCZEGÓŁY DNIA KALENDARZA
    ========================================================= */
 
 function showCalendarDay(iso) {
@@ -1650,6 +1906,7 @@ function showCalendarDay(iso) {
         `;
 
         return;
+
     }
 
 
@@ -1661,46 +1918,39 @@ function showCalendarDay(iso) {
 
         ${
             types
-                .map(
-                    type => `
+                .map(type => `
 
-                        <div class="line">
+                    <div class="line">
 
-                            <b>
-                                ${escapeHtml(
-                                    WASTE_TYPES[
-                                        type
-                                    ].name
-                                )}
-                            </b>
+                        <b>
+                            ${escapeHtml(
+                                WASTE_TYPES[type].name
+                            )}
+                        </b>
 
-                            <small>
-                                ${
-                                    WASTE_TYPES[
-                                        type
-                                    ].bag
-                                        ? `(${escapeHtml(
-                                            WASTE_TYPES[
-                                                type
-                                            ].bag
-                                        )})`
-                                        : ""
-                                }
-                            </small>
+                        ${
+                            WASTE_TYPES[type].bag
+                                ? `<small>
+                                    ${escapeHtml(
+                                        WASTE_TYPES[type].bag
+                                    )}
+                                   </small>`
+                                : ""
+                        }
 
-                        </div>
+                    </div>
 
-                    `
-                )
+                `)
                 .join("")
         }
 
     `;
+
 }
 
 
 /* =========================================================
-   INFORMACJA O WYBRANYM ADRESIE
+   SZCZEGÓŁY KALENDARZA
    ========================================================= */
 
 function renderCalendarDetails() {
@@ -1733,6 +1983,7 @@ function renderCalendarDetails() {
         `;
 
         return;
+
     }
 
 
@@ -1753,24 +2004,19 @@ function renderCalendarDetails() {
         <p>
             Zmieszane:
             <b>
-                ${escapeHtml(
-                    zones.mixed ||
-                    "brak w danych"
-                )}
+                ${zones.mixed || "brak w danych"}
             </b>
 
             ·
 
             Segregowane:
             <b>
-                ${escapeHtml(
-                    zones.segregated ||
-                    "brak w danych"
-                )}
+                ${zones.segregated || "brak w danych"}
             </b>
         </p>
 
     `;
+
 }
 
 
@@ -1780,8 +2026,7 @@ function renderCalendarDetails() {
 
 function changeMonth(delta) {
 
-    currentMonth +=
-        delta;
+    currentMonth += delta;
 
 
     if (
@@ -1789,7 +2034,6 @@ function changeMonth(delta) {
     ) {
 
         currentMonth = 11;
-
         currentYear--;
 
     }
@@ -1800,18 +2044,18 @@ function changeMonth(delta) {
     ) {
 
         currentMonth = 0;
-
         currentYear++;
 
     }
 
 
     renderCalendar();
+
 }
 
 
 /* =========================================================
-   PRZYCISKI POPRZEDNI / NASTĘPNY MIESIĄC
+   PRZYCISKI KALENDARZA
    ========================================================= */
 
 document.addEventListener(
@@ -1819,8 +2063,7 @@ document.addEventListener(
     event => {
 
         if (
-            event.target.id ===
-            "prev"
+            event.target.id === "prev"
         ) {
 
             changeMonth(-1);
@@ -1829,8 +2072,7 @@ document.addEventListener(
 
 
         if (
-            event.target.id ===
-            "next"
+            event.target.id === "next"
         ) {
 
             changeMonth(1);
@@ -1860,6 +2102,7 @@ function getFavorites() {
         return [];
 
     }
+
 }
 
 
@@ -1869,11 +2112,12 @@ function saveFavorites(items) {
         "favorites",
         JSON.stringify(items)
     );
+
 }
 
 
 /* =========================================================
-   GWIAZDKA ULUBIONYCH
+   GWIAZDKA
    ========================================================= */
 
 function updateFavoriteStar() {
@@ -1890,24 +2134,26 @@ function updateFavoriteStar() {
 
 
     const exists =
-        getFavorites().some(
-            item =>
-                sameStreet(
-                    item.street,
-                    selectedStreet
-                )
-        );
+        getFavorites()
+            .some(
+                item =>
+                    sameStreet(
+                        item.street,
+                        selectedStreet
+                    )
+            );
 
 
     button.textContent =
         exists
             ? "★"
             : "☆";
+
 }
 
 
 /* =========================================================
-   MODAL ULUBIONEGO
+   MODAL ULUBIONYCH
    ========================================================= */
 
 function openFavoriteModal(street) {
@@ -1921,22 +2167,24 @@ function openFavoriteModal(street) {
             "modalAddress"
         );
 
+    if (address) {
+
+        address.textContent =
+            street;
+
+    }
+
 
     const name =
         document.getElementById(
             "favoriteName"
         );
 
-
-    if (address) {
-        address.textContent =
-            street;
-    }
-
-
     if (name) {
+
         name.value =
             street;
+
     }
 
 
@@ -1944,8 +2192,9 @@ function openFavoriteModal(street) {
         .getElementById(
             "modal"
         )
-        ?.classList
-        .remove("hidden");
+        ?.classList.remove(
+            "hidden"
+        );
 
 
     setTimeout(
@@ -1960,6 +2209,7 @@ function openFavoriteModal(street) {
         },
         50
     );
+
 }
 
 
@@ -1973,12 +2223,14 @@ function closeModal() {
         .getElementById(
             "modal"
         )
-        ?.classList
-        .add("hidden");
+        ?.classList.add(
+            "hidden"
+        );
 
 
     pendingFavoriteStreet =
         "";
+
 }
 
 
@@ -1991,7 +2243,9 @@ function saveFavorite() {
     if (
         !pendingFavoriteStreet
     ) {
+
         return;
+
     }
 
 
@@ -2022,8 +2276,7 @@ function saveFavorite() {
         street:
             pendingFavoriteStreet,
 
-        name:
-            name
+        name
 
     });
 
@@ -2038,11 +2291,12 @@ function saveFavorite() {
     updateFavoriteStar();
 
     renderFavorites();
+
 }
 
 
 /* =========================================================
-   USUWANIE ULUBIONEGO
+   USUNIĘCIE ULUBIONEGO
    ========================================================= */
 
 function removeFavorite(street) {
@@ -2064,11 +2318,12 @@ function removeFavorite(street) {
     renderFavorites();
 
     updateFavoriteStar();
+
 }
 
 
 /* =========================================================
-   WYŚWIETLANIE ULUBIONYCH
+   RENDER ULUBIONYCH
    ========================================================= */
 
 function renderFavorites() {
@@ -2088,7 +2343,9 @@ function renderFavorites() {
         !list ||
         !empty
     ) {
+
         return;
+
     }
 
 
@@ -2104,7 +2361,6 @@ function renderFavorites() {
 
     list.innerHTML =
         favorites
-
             .map(
                 item => `
 
@@ -2112,11 +2368,15 @@ function renderFavorites() {
                         class="favorite card"
                     >
 
-                        <div class="star2">
+                        <div
+                            class="star2"
+                        >
                             ★
                         </div>
 
-                        <div class="fi">
+                        <div
+                            class="fi"
+                        >
 
                             <b>
                                 ${escapeHtml(
@@ -2133,7 +2393,6 @@ function renderFavorites() {
                         </div>
 
                         <button
-                            type="button"
                             data-open-fav="${escapeAttribute(
                                 item.street
                             )}"
@@ -2142,7 +2401,6 @@ function renderFavorites() {
                         </button>
 
                         <button
-                            type="button"
                             class="del"
                             data-del-fav="${escapeAttribute(
                                 item.street
@@ -2155,50 +2413,47 @@ function renderFavorites() {
 
                 `
             )
-
             .join("");
 
 
-    list
-        .querySelectorAll(
-            "[data-open-fav]"
-        )
+    /*
+       Jeden listener zamiast wielu.
+    */
 
-        .forEach(button => {
+    list.onclick =
+        event => {
 
-            button.addEventListener(
-                "click",
-                () => {
+            const open =
+                event.target.closest(
+                    "[data-open-fav]"
+                );
 
-                    selectStreet(
-                        button.dataset.openFav
-                    );
+            if (open) {
 
-                }
-            );
+                selectStreet(
+                    open.dataset.openFav
+                );
 
-        });
+                return;
+
+            }
 
 
-    list
-        .querySelectorAll(
-            "[data-del-fav]"
-        )
+            const remove =
+                event.target.closest(
+                    "[data-del-fav]"
+                );
 
-        .forEach(button => {
+            if (remove) {
 
-            button.addEventListener(
-                "click",
-                () => {
+                removeFavorite(
+                    remove.dataset.delFav
+                );
 
-                    removeFavorite(
-                        button.dataset.delFav
-                    );
+            }
 
-                }
-            );
+        };
 
-        });
 }
 
 
@@ -2219,8 +2474,6 @@ function setupSettings() {
         );
 
 
-    /* TRYB CIEMNY */
-
     const savedDark =
         localStorage.getItem(
             "dark"
@@ -2231,7 +2484,6 @@ function setupSettings() {
 
         dark.checked =
             savedDark;
-
 
         document.body.classList.toggle(
             "dark",
@@ -2248,7 +2500,6 @@ function setupSettings() {
                     dark.checked
                 );
 
-
                 document.body.classList.toggle(
                     "dark",
                     dark.checked
@@ -2259,8 +2510,6 @@ function setupSettings() {
 
     }
 
-
-    /* POWIADOMIENIA */
 
     if (notifications) {
 
@@ -2312,8 +2561,6 @@ function setupSettings() {
     }
 
 
-    /* WYCZYŚĆ ULUBIONE */
-
     document
         .getElementById(
             "clearFavorites"
@@ -2340,8 +2587,6 @@ function setupSettings() {
         );
 
 
-    /* INFORMACJE */
-
     document
         .getElementById(
             "about"
@@ -2356,11 +2601,12 @@ function setupSettings() {
 
             }
         );
+
 }
 
 
 /* =========================================================
-   OBSŁUGA GWIAZDKI
+   ULUBIONA AKTUALNA ULICA
    ========================================================= */
 
 function setupFavorite() {
@@ -2379,13 +2625,14 @@ function setupFavorite() {
 
 
                 const exists =
-                    getFavorites().some(
-                        item =>
-                            sameStreet(
-                                item.street,
-                                selectedStreet
-                            )
-                    );
+                    getFavorites()
+                        .some(
+                            item =>
+                                sameStreet(
+                                    item.street,
+                                    selectedStreet
+                                )
+                        );
 
 
                 if (exists) {
@@ -2410,10 +2657,9 @@ function setupFavorite() {
         .querySelectorAll(
             "[data-close]"
         )
+        .forEach(button => {
 
-        .forEach(element => {
-
-            element.addEventListener(
+            button.addEventListener(
                 "click",
                 closeModal
             );
@@ -2450,6 +2696,7 @@ function setupFavorite() {
 
             }
         );
+
 }
 
 
@@ -2477,6 +2724,7 @@ function loadSavedStreet() {
         );
 
     }
+
 }
 
 
@@ -2486,27 +2734,22 @@ function loadSavedStreet() {
 
 function parseDate(value) {
 
-    const parts =
+    const [
+        d,
+        m,
+        y
+    ] =
         String(value)
             .split(".")
             .map(Number);
 
 
-    const day =
-        parts[0];
-
-    const month =
-        parts[1];
-
-    const year =
-        parts[2];
-
-
     return new Date(
-        year,
-        month - 1,
-        day
+        y,
+        m - 1,
+        d
     );
+
 }
 
 
@@ -2522,49 +2765,63 @@ function formatDate(value) {
             year: "numeric"
         }
     );
+
 }
 
 
 function toPolishDate(iso) {
 
-    const parts =
+    const [
+        y,
+        m,
+        d
+    ] =
         iso.split("-");
 
 
-    const year =
-        parts[0];
+    return `${d}.${m}.${y}`;
 
-    const month =
-        parts[1];
-
-    const day =
-        parts[2];
-
-
-    return `${day}.${month}.${year}`;
 }
 
 
+/* =========================================================
+   POLSKA DATA -> ISO
+   ========================================================= */
+
+function toIsoDate(value) {
+
+    const [
+        d,
+        m,
+        y
+    ] =
+        String(value)
+            .split(".");
+
+
+    return `${y}-${m}-${d}`;
+
+}
+
+
+/* =========================================================
+   ISO -> POLSKA DATA
+   ========================================================= */
+
 function formatIsoDate(iso) {
 
-    const parts =
+    const [
+        y,
+        m,
+        d
+    ] =
         iso.split("-");
 
 
-    const year =
-        Number(parts[0]);
-
-    const month =
-        Number(parts[1]);
-
-    const day =
-        Number(parts[2]);
-
-
     return new Date(
-        year,
-        month - 1,
-        day
+        Number(y),
+        Number(m) - 1,
+        Number(d)
     ).toLocaleDateString(
         "pl-PL",
         {
@@ -2573,6 +2830,7 @@ function formatIsoDate(iso) {
             year: "numeric"
         }
     );
+
 }
 
 
@@ -2603,6 +2861,7 @@ function escapeHtml(value) {
             /'/g,
             "&#039;"
         );
+
 }
 
 
@@ -2614,6 +2873,7 @@ function escapeAttribute(value) {
         /`/g,
         "&#096;"
     );
+
 }
 
 
@@ -2629,8 +2889,13 @@ async function start() {
             await fetch(
                 "./data/schedule.json",
                 {
-                    cache:
-                        "no-store"
+                    /*
+                       Zostawiamy cache przeglądarki.
+                       Dzięki temu telefon nie musi
+                       za każdym razem pobierać danych
+                       od nowa.
+                    */
+                    cache: "default"
                 }
             );
 
@@ -2649,7 +2914,6 @@ async function start() {
 
 
         if (
-            !schedule ||
             !schedule.streetGroups ||
             !schedule.mixed ||
             !schedule.segregated
@@ -2661,6 +2925,39 @@ async function start() {
 
         }
 
+
+        /*
+           Czyścimy cache po załadowaniu
+           nowego harmonogramu.
+        */
+
+        streetListCache =
+            null;
+
+        normalizedStreetListCache =
+            null;
+
+        streetLookupCache.clear();
+
+        streetZonesCache.clear();
+
+        streetScheduleCache.clear();
+
+        calendarDateCache.clear();
+
+
+        /*
+           Przygotowanie listy ulic tylko raz.
+        */
+
+        allStreets();
+
+        getNormalizedStreetList();
+
+
+        /*
+           Uruchomienie aplikacji.
+        */
 
         setupSearch();
 
@@ -2680,7 +2977,6 @@ async function start() {
     } catch (error) {
 
         console.error(
-            "Błąd aplikacji:",
             error
         );
 
@@ -2702,8 +2998,8 @@ async function start() {
                     </strong>
 
                     <p>
-                        Nie udało się wczytać
-                        harmonogramu.
+                        Nie udało się
+                        wczytać harmonogramu.
                     </p>
 
                     <small>
@@ -2719,11 +3015,12 @@ async function start() {
         }
 
     }
+
 }
 
 
 /* =========================================================
-   URUCHOMIENIE
+   START
    ========================================================= */
 
 document.addEventListener(
